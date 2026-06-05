@@ -1,0 +1,20 @@
+node_modules/
+.svelte-kit/
+build/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+
+# Berth runtime state (sqlite db + WAL/SHM and log files) — never commit.
+.berth/
+*.db
+*.db-shm
+*.db-wal
+
+# Demo mode artifacts (created by `bun run demo:seed`)
+demo.db
+demo.db-shm
+demo.db-wal
+

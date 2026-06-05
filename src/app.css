@@ -1,0 +1,127 @@
+/* @import statements MUST come before @tailwind directives (PostCSS rule). */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Berth design tokens — light + dark, warm orange accent. Standalone (no
+ * workspace dep). Inspired by the disciplined neutral palettes of editorial
+ * dev-tool UIs (Vercel, Linear, Resend). */
+:root {
+  --b-bg: #fdfcfa;
+  --b-surface: #ffffff;
+  --b-surface-2: #f7f5f0;
+  --b-text: #161614;
+  --b-text-2: #4a4842;
+  --b-text-3: #8a877f;
+  --b-border: #e8e4dc;
+  --b-border-2: #d8d3c8;
+  --b-accent: #d2691e;        /* warm orange */
+  --b-accent-soft: #fce5c7;
+  --b-ok: #2f8f4e;
+  --b-warn: #c98a00;
+  --b-bad: #c9382b;
+  --b-info: #2e6fdc;
+  --b-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --b-sans: 'Inter', system-ui, sans-serif;
+
+  color-scheme: light;
+}
+
+html.dark {
+  --b-bg: #0e0e10;
+  --b-surface: #161618;
+  --b-surface-2: #1d1d20;
+  --b-text: #f2efe7;
+  --b-text-2: #b5b1a6;
+  --b-text-3: #7c786e;
+  --b-border: #2a2a2e;
+  --b-border-2: #3a3a3f;
+  --b-accent: #e98b4a;
+  --b-accent-soft: #3a261b;
+  --b-ok: #4ab16a;
+  --b-warn: #e2a93b;
+  --b-bad: #e35a4c;
+  --b-info: #5e96f0;
+  color-scheme: dark;
+}
+
+html, body {
+  background: var(--b-bg);
+  color: var(--b-text);
+  font-family: var(--b-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.b-surface {
+  background: var(--b-surface);
+  border: 1px solid var(--b-border);
+  border-radius: 12px;
+}
+
+.b-mono { font-family: var(--b-mono); }
+.b-muted { color: var(--b-text-2); }
+.b-mute2 { color: var(--b-text-3); }
+
+.b-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--b-text-3);
+}
+.b-dot.up   { background: var(--b-ok);  box-shadow: 0 0 0 3px color-mix(in oklab, var(--b-ok) 22%, transparent); }
+.b-dot.down { background: var(--b-bad); }
+.b-dot.warn { background: var(--b-warn); }
+.b-dot.idle { background: var(--b-text-3); }
+
+.b-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--b-border);
+  border-radius: 999px;
+  background: var(--b-surface-2);
+  font-size: 11px;
+  color: var(--b-text-2);
+  font-family: var(--b-mono);
+}
+
+.b-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--b-border);
+  border-radius: 8px;
+  background: var(--b-surface);
+  color: var(--b-text);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+.b-btn:hover  { background: var(--b-surface-2); }
+.b-btn:active { transform: translateY(1px); }
+.b-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.b-btn.primary { background: var(--b-accent); color: #fff; border-color: transparent; }
+.b-btn.primary:hover { filter: brightness(1.05); background: var(--b-accent); }
+.b-btn.danger { color: var(--b-bad); border-color: color-mix(in oklab, var(--b-bad) 35%, var(--b-border)); }
+.b-btn.danger:hover { background: color-mix(in oklab, var(--b-bad) 8%, var(--b-surface-2)); }
+
+.b-input {
+  border: 1px solid var(--b-border);
+  border-radius: 8px;
+  background: var(--b-surface);
+  color: var(--b-text);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: var(--b-sans);
+}
+.b-input:focus { outline: 2px solid var(--b-accent); outline-offset: 1px; }
