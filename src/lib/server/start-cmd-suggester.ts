@@ -21,11 +21,27 @@ export function suggestStartCmd(
       // Pick the most-likely script — order matches what most templates use.
       const candidates = ['dev', 'start', 'serve', 'develop'] as const;
       for (const name of candidates) {
-        if (typeof scripts[name] === 'string') {
-          // If the script already references --port the same value, don't append;
-          // otherwise leave the script as-is (it likely binds the right port already).
-          return { cmd: `bun run ${name}`, reason: `package.json "scripts.${name}"` };
-        }
+        const scriptValue = scripts[name];
+        if (typeof scriptValue !== 'string') continue;
+        // Force the framework onto Berth's allocated port instead of its
+        // builtin default (vite → 5173, next → 3000, nuxt → 3000, etc.).
+        // Without this the first time the user starts the app it binds
+        // whatever the framework picks and the dashboard's port column
+        // ends up disagreeing with reality. Only do this when the script
+        // looks like it'll respect a --port flag and isn't already pinned.
+        const wantsPort =
+          port != null &&
+          !/--port[=\s]\d+/.test(scriptValue) &&
+          /(\bvite\b|\bnext\s+dev\b|\bnuxt\s+dev\b|\bremix\b|\bwrangler\b|\bsvelte-kit\b)/.test(
+            scriptValue
+          );
+        const cmd = wantsPort ? `bun run ${name} -- --port ${port}` : `bun run ${name}`;
+        return {
+          cmd,
+          reason: wantsPort
+            ? `package.json "scripts.${name}" pinned to :${port}`
+            : `package.json "scripts.${name}"`
+        };
       }
     } catch {
       /* malformed package.json — fall through */

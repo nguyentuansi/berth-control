@@ -4,6 +4,7 @@ import { reattachOnBoot } from '$lib/server/supervisor.js';
 import { importPortsMd } from '$lib/server/ports-md.js';
 import { identify } from '$lib/server/tailscale.js';
 import { isDemoMode } from '$lib/server/demo.js';
+import { startUptimeHeartbeat } from '$lib/server/uptime.js';
 
 let bootDone = false;
 function bootOnce() {
@@ -22,6 +23,7 @@ function bootOnce() {
   } catch (e) {
     console.warn('[berth] PORTS.md import failed:', e);
   }
+  startUptimeHeartbeat();
   console.log(`[berth] ready on http://127.0.0.1:5202`);
 }
 

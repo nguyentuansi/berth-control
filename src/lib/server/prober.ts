@@ -6,7 +6,7 @@ const exec = promisify(execFile);
 
 export interface PortListener {
   port: number;
-  /** The local-side host as ss reports it (e.g. "127.0.0.1", "0.0.0.0", "100.78.34.73", "::1"). */
+  /** The local-side host as ss reports it (e.g. "127.0.0.1", "0.0.0.0", "100.x.y.z" for tailnet IPs, "::1"). */
   host: string;
   pid: number | null;
   cmd: string | null;
@@ -81,6 +81,46 @@ export function parseSs(stdout: string): PortListener[] {
 export function pidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   return existsSync(`/proc/${pid}`);
+}
+
+/**
+ * Read /proc/<pid>/cgroup and classify what supervisor (if any) put the
+ * process there. Useful for explaining why a port-bound process is running:
+ * a `.service` leaf is a systemd unit (extracted as `unit`); a `.scope`
+ * leaf is typically a transient/session cgroup (terminal, browser app);
+ * anything else falls through to `unknown`.
+ */
+export type ProcOrigin = {
+  kind: 'systemd' | 'scope' | 'unknown';
+  unit: string | null;
+  /** systemd manager that owns the unit, derived from the cgroup path's
+   *  containing slice. user-level units sit under `/user.slice/...`; system
+   *  units under `/system.slice/...`. null for non-systemd cgroups. */
+  scope: 'user' | 'system' | null;
+};
+export function procOrigin(pid: number): ProcOrigin {
+  try {
+    // cgroup v2: "0::/user.slice/.../app.slice/jarvis-fleet.service".
+    // Multiple lines on v1 hybrid; the leaf is the same on the last v2 line.
+    const raw = readFileSync(`/proc/${pid}/cgroup`, 'utf8').trim();
+    const lastLine = raw.split('\n').pop() ?? '';
+    const path = lastLine.split('::')[1] ?? lastLine;
+    const leaf = path.split('/').filter(Boolean).pop() ?? '';
+    const scope: 'user' | 'system' | null = path.includes('/user.slice/')
+      ? 'user'
+      : path.startsWith('/system.slice/')
+        ? 'system'
+        : null;
+    if (leaf.endsWith('.service')) {
+      return { kind: 'systemd', unit: leaf.slice(0, -'.service'.length), scope };
+    }
+    if (leaf.endsWith('.scope')) {
+      return { kind: 'scope', unit: leaf.slice(0, -'.scope'.length), scope };
+    }
+    return { kind: 'unknown', unit: null, scope: null };
+  } catch {
+    return { kind: 'unknown', unit: null, scope: null };
+  }
 }
 
 /** Returns one line of /proc/<pid>/stat parsed to { state, ppid, pgid }. */

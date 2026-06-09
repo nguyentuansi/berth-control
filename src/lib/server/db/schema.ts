@@ -65,6 +65,21 @@ export const snapshots = sqliteTable('snapshots', {
   created_by: text('created_by')
 });
 
+/**
+ * Minute-resolution liveness samples. The server heartbeat (uptime.ts) writes
+ * one row per (app_id, minute) recording whether the app's port had a local
+ * listener at the time of polling. Powers the uptime sparkline for apps
+ * Berth doesn't directly supervise (e.g. external systemd units).
+ *
+ * Conflict policy on (app_id, ts): `up = MAX(existing, new)` — any 'up'
+ * reading within a minute makes that minute count as up.
+ */
+export const uptime_samples = sqliteTable('uptime_samples', {
+  app_id: text('app_id').notNull(),
+  ts: integer('ts').notNull(),
+  up: integer('up').notNull()
+});
+
 export type App = typeof apps.$inferSelect;
 export type NewApp = typeof apps.$inferInsert;
 export type Run = typeof runs.$inferSelect;

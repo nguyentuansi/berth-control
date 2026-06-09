@@ -4,6 +4,7 @@
   import { Sun, Moon, Activity, ListPlus, Settings, Search, Bookmark } from 'lucide-svelte';
   import { page } from '$app/state';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
+  import Toaster from '$lib/components/Toaster.svelte';
   import type { LayoutData } from './$types.js';
 
   let { data, children }: { data: LayoutData; children: any } = $props();
@@ -54,6 +55,7 @@
 </main>
 
 <CommandPalette apps={data.allApps ?? []} />
+<Toaster />
 
 <style>
   .b-header {

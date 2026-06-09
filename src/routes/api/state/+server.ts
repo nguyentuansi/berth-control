@@ -1,13 +1,20 @@
 import type { RequestHandler } from './$types.js';
 import { db, schema } from '$lib/server/db/index.js';
 import { eq } from 'drizzle-orm';
-import { listListeners, probeHealth } from '$lib/server/prober.js';
+import { listListeners, probeHealth, procOrigin, pidInfo } from '$lib/server/prober.js';
 import { liveSnapshot, reapDead } from '$lib/server/supervisor.js';
 import { getServeStatus, mappingsByLocalPort } from '$lib/server/tailscale-serve.js';
+import { snapshotProcStats } from '$lib/server/proc-stats.js';
 import { isDemoMode, DEMO_STATE, DEMO_TAILSCALE_HOST } from '$lib/server/demo.js';
 
 interface LiveStatus {
   up: boolean;
+  /** True iff a TCP listener is bound on the app's configured port. Set
+   *  independently of `listenerPid` because the OS sometimes won't reveal
+   *  the owning PID — happens whenever the listener is owned by a different
+   *  user (root services, ollama, postgres, system-scope systemd units).
+   *  The dashboard keys the green/amber/red dot on this, not on the PID. */
+  serving: boolean;
   listenerPid: number | null;
   listenerCmd: string | null;
   managedPid: number | null;
@@ -16,6 +23,26 @@ interface LiveStatus {
   latencyMs: number | null;
   /** Tailscale serve mapping for this app's local port, if any. */
   tailscale: { port: number; funnel: boolean } | null;
+  /** Whole-pgid CPU % over the last 2s. null = not measurable yet. */
+  cpuPct: number | null;
+  /** Whole-pgid resident memory in MB. */
+  ramMB: number | null;
+  /** Whole-pgid GPU memory in MB (nvidia-smi), null if not on GPU. */
+  gpuMB: number | null;
+  /** Where this row's listener PID lives. 'managed' = Berth spawned it
+   *  directly via the supervisor; 'systemd' = a systemd unit owns it
+   *  (`unit` carries the name without the `.service` suffix); 'scope' =
+   *  transient cgroup (terminal, browser app); null = not currently up.
+   *
+   *  Berth's *own* dashboard row falls into 'systemd' because it runs under
+   *  `berth.service`; the 'managed' label is reserved for non-Berth apps the
+   *  control panel happens to be running, so the column doesn't read "berth"
+   *  for things unrelated to the Berth project. */
+  origin: {
+    kind: 'managed' | 'systemd' | 'scope' | 'unknown';
+    unit: string | null;
+    scope: 'user' | 'system' | null;
+  } | null;
 }
 
 interface Snapshot {
@@ -25,6 +52,32 @@ interface Snapshot {
   tailscaleHost: string | null;
   /** Whether the tailscale daemon is reachable + we can read serve status. */
   tailscaleAvailable: boolean;
+}
+
+/** Walk ppid up from `pid`, returning true if `target` is somewhere in the
+ *  chain. Memoised across hops so a forest of children with the same root
+ *  costs only one /proc read per intermediate PID. Capped at 12 hops. */
+function isAncestor(pid: number, target: number, cache: Map<number, boolean>): boolean {
+  let cur = pid;
+  const visited: number[] = [];
+  for (let hop = 0; hop < 12; hop++) {
+    if (cur === target) {
+      for (const v of visited) cache.set(v, true);
+      return true;
+    }
+    if (cur <= 1) break;
+    const memo = cache.get(cur);
+    if (memo !== undefined) {
+      for (const v of visited) cache.set(v, memo);
+      return memo;
+    }
+    visited.push(cur);
+    const info = pidInfo(cur);
+    if (!info) break;
+    cur = info.ppid;
+  }
+  for (const v of visited) cache.set(v, false);
+  return false;
 }
 
 async function snapshot(): Promise<Snapshot> {
@@ -44,6 +97,10 @@ async function snapshot(): Promise<Snapshot> {
   const byApp: Record<string, LiveStatus> = {};
   // Healthchecks run in parallel but capped — only for up listeners with a URL.
   const healthJobs: Promise<void>[] = [];
+  // Build the (app → root PID) map up-front so proc-stats can do one /proc
+  // walk for the whole snapshot. The root is whatever process represents the
+  // app's tree — Berth's managed PID if we own it, else the external listener.
+  const pidByApp = new Map<string, number>();
   for (const a of apps) {
     const listener = a.port ? byPort.get(a.port) ?? null : null;
     const m = managed[a.id] ?? null;
@@ -51,15 +108,31 @@ async function snapshot(): Promise<Snapshot> {
     const tsMap = a.port ? tsByLocal.get(a.port) : undefined;
     const st: LiveStatus = {
       up,
+      serving: !!listener,
       listenerPid: listener?.pid ?? null,
       listenerCmd: listener?.cmd ?? null,
       managedPid: m?.pid ?? null,
       managedSince: m?.startedAt ?? null,
       healthOk: null,
       latencyMs: null,
-      tailscale: tsMap ? { port: tsMap.tailscalePort, funnel: tsMap.funnel } : null
+      tailscale: tsMap ? { port: tsMap.tailscalePort, funnel: tsMap.funnel } : null,
+      cpuPct: null,
+      ramMB: null,
+      gpuMB: null,
+      origin: null
     };
     byApp[a.id] = st;
+    if (up) {
+      const pid = m?.pid ?? listener?.pid ?? null;
+      if (pid) pidByApp.set(a.id, pid);
+      // Berth-managed wins over cgroup inspection — managed processes inherit
+      // berth.service's cgroup, so cgroup alone would mis-label them.
+      if (m) {
+        st.origin = { kind: 'managed', unit: null, scope: null };
+      } else if (pid) {
+        st.origin = procOrigin(pid);
+      }
+    }
     if (up && a.healthcheck_url) {
       healthJobs.push(
         probeHealth(a.healthcheck_url).then((h) => {
@@ -69,7 +142,58 @@ async function snapshot(): Promise<Snapshot> {
       );
     }
   }
+  // Auto-correct: if Berth managed something but the configured port has no
+  // listener, scan the listener list for any TCP socket owned by a
+  // descendant of the managed root (think `bun run dev` → vite picking 5173
+  // when we allocated 5172). Persist the real port back to `apps.port` so
+  // the dashboard, the prober, and any later tailnet ops all line up.
+  const corrections: { id: string; port: number }[] = [];
+  const ancestorCache = new Map<number, Map<number, boolean>>();
+  for (const a of apps) {
+    const st = byApp[a.id];
+    if (st.serving) continue;
+    if (st.managedPid == null) continue;
+    let myCache = ancestorCache.get(st.managedPid);
+    if (!myCache) {
+      myCache = new Map();
+      ancestorCache.set(st.managedPid, myCache);
+    }
+    let chosen: { port: number; pid: number; cmd: string | null } | null = null;
+    for (const l of listeners) {
+      if (!l.isLocal || !l.pid) continue;
+      if (isAncestor(l.pid, st.managedPid, myCache)) {
+        chosen = { port: l.port, pid: l.pid, cmd: l.cmd };
+        break;
+      }
+    }
+    if (chosen && chosen.port !== a.port) {
+      corrections.push({ id: a.id, port: chosen.port });
+      st.serving = true;
+      st.listenerPid = chosen.pid;
+      st.listenerCmd = chosen.cmd;
+      const tsMap = tsByLocal.get(chosen.port);
+      if (tsMap) st.tailscale = { port: tsMap.tailscalePort, funnel: tsMap.funnel };
+    }
+  }
+  if (corrections.length > 0) {
+    for (const c of corrections) {
+      db.update(schema.apps)
+        .set({ port: c.port, updated_at: new Date() })
+        .where(eq(schema.apps.id, c.id))
+        .run();
+    }
+  }
+  // Stats walk and healthchecks both go to the OS in parallel.
+  const statsJob = snapshotProcStats(pidByApp);
   await Promise.allSettled(healthJobs);
+  const stats = await statsJob;
+  for (const [appId, s] of stats) {
+    const live = byApp[appId];
+    if (!live) continue;
+    live.cpuPct = s.cpuPct;
+    live.ramMB = s.ramMB;
+    live.gpuMB = s.gpuMB;
+  }
   return {
     ts: Date.now(),
     byApp,
@@ -88,18 +212,24 @@ function demoSnapshot(): Snapshot {
     if (!d) {
       byApp[a.id] = {
         up: false,
+        serving: false,
         listenerPid: null,
         listenerCmd: null,
         managedPid: null,
         managedSince: null,
         healthOk: null,
         latencyMs: null,
-        tailscale: null
+        tailscale: null,
+        cpuPct: null,
+        ramMB: null,
+        gpuMB: null,
+        origin: null
       };
       continue;
     }
     byApp[a.id] = {
       up: d.up,
+      serving: d.up && d.listenerPid != null,
       listenerPid: d.listenerPid,
       listenerCmd: d.listenerCmd,
       managedPid: d.managedPid,
@@ -107,7 +237,11 @@ function demoSnapshot(): Snapshot {
         d.managedSinceAgoSec != null ? Date.now() - d.managedSinceAgoSec * 1000 : null,
       healthOk: d.healthOk,
       latencyMs: d.latencyMs,
-      tailscale: d.tailscale
+      tailscale: d.tailscale,
+      cpuPct: null,
+      ramMB: null,
+      gpuMB: null,
+      origin: null
     };
   }
   return {

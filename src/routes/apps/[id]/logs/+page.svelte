@@ -14,6 +14,11 @@
   let pre: HTMLElement | undefined = $state();
   let es: EventSource | null = null;
 
+  // Vite / wrangler / cargo etc. all write ANSI color escapes assuming a tty.
+  // Strip CSI sequences so they don't render as literal `[36m` noise.
+  const ANSI_CSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+  const stripAnsi = (s: string) => s.replace(ANSI_CSI, '');
+
   function connect() {
     es?.close();
     lines = [];
@@ -22,6 +27,7 @@
     es.addEventListener('log', async (m) => {
       try {
         const j = JSON.parse((m as MessageEvent).data) as Line;
+        j.line = stripAnsi(j.line);
         lines = [...lines.slice(-4999), j];
         if (stickToBottom) {
           await tick();

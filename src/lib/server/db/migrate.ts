@@ -70,6 +70,16 @@ export function ensureSchema() {
       created_by TEXT
     );
     CREATE INDEX IF NOT EXISTS snapshots_name_idx ON snapshots(name);
+
+    -- Minute-resolution liveness samples. One row per (app_id, minute_ts);
+    -- powers the uptime sparkline for apps Berth doesn't supervise directly.
+    CREATE TABLE IF NOT EXISTS uptime_samples (
+      app_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      up INTEGER NOT NULL,
+      PRIMARY KEY (app_id, ts)
+    );
+    CREATE INDEX IF NOT EXISTS uptime_samples_app_ts ON uptime_samples(app_id, ts DESC);
   `);
   sqlite.close();
 }

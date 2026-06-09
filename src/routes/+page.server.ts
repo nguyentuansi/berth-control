@@ -1,5 +1,6 @@
 import { db, schema } from '$lib/server/db/index.js';
-import { asc, eq, isNull, and, desc } from 'drizzle-orm';
+import { asc, eq, isNull, desc } from 'drizzle-orm';
+import { getUptimeBuckets } from '$lib/server/uptime.js';
 import type { PageServerLoad } from './$types.js';
 
 export const load: PageServerLoad = async () => {
@@ -24,5 +25,8 @@ export const load: PageServerLoad = async () => {
     .orderBy(desc(schema.events.ts))
     .limit(50)
     .all();
-  return { apps: list, openByApp, latestEvent };
+  // 24-bucket up-fraction over the last 24h for each app — sparkline data.
+  const uptime: Record<string, number[]> = {};
+  for (const a of list) uptime[a.id] = getUptimeBuckets(a.id);
+  return { apps: list, openByApp, latestEvent, uptime };
 };

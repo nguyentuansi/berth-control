@@ -1,11 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, createWriteStream, type WriteStream } from 'node:fs';
+import { existsSync, mkdirSync, createWriteStream, readdirSync, type WriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { eq, isNull, and } from 'drizzle-orm';
 import { db } from './db/index.js';
 import { apps, runs, events, log_chunks, type App, type Run } from './db/schema.js';
-import { pidAlive, pidInfo } from './prober.js';
+import { pidAlive, pidInfo, listListeners, isLocalBind } from './prober.js';
 
 const LOG_ROOT = resolve(homedir(), '.berth/logs');
 
@@ -187,6 +187,38 @@ export async function stopApp(
   return killByPid(appId, proc.pid, proc.pgid ?? proc.pid, proc.run_id, userLogin);
 }
 
+/** Walk /proc once, build a ppid → children index, BFS down from `rootPid`.
+ *  Returns every PID in the tree including `rootPid` itself. We snapshot the
+ *  tree *before* signalling because once a middle-tier parent dies, its
+ *  surviving children get reparented to PID 1 — at that point they no longer
+ *  look like our descendants and the next walk would miss them. Tracking by
+ *  PID still works because PIDs are stable until the process exits. */
+function collectDescendants(rootPid: number): number[] {
+  const children = new Map<number, number[]>();
+  try {
+    for (const d of readdirSync('/proc')) {
+      if (!/^\d+$/.test(d)) continue;
+      const pid = Number(d);
+      const info = pidInfo(pid);
+      if (!info) continue;
+      const sibs = children.get(info.ppid);
+      if (sibs) sibs.push(pid);
+      else children.set(info.ppid, [pid]);
+    }
+  } catch {
+    return [rootPid];
+  }
+  const out: number[] = [];
+  const stack = [rootPid];
+  while (stack.length) {
+    const p = stack.pop()!;
+    out.push(p);
+    const cs = children.get(p);
+    if (cs) for (const c of cs) stack.push(c);
+  }
+  return out;
+}
+
 async function killByPid(
   appId: string,
   pid: number,
@@ -194,33 +226,65 @@ async function killByPid(
   runId: number,
   userLogin?: string | null
 ): Promise<{ stopped: boolean }> {
-  const tryKill = (sig: NodeJS.Signals) => {
+  // Capture the whole descendant tree NOW. Process-group kill alone (-pgid)
+  // doesn't reach monorepo workers — Bun, Node, and others reset their pgid
+  // for child tasks (turbo's per-app `bun run dev` workers are the canonical
+  // case), so the actual port-bound vite ends up in a sibling pgid and never
+  // gets the signal. Signalling each PID directly handles that.
+  const tree = collectDescendants(pid);
+
+  const signalAll = (sig: NodeJS.Signals) => {
+    for (const p of tree) {
+      try {
+        process.kill(p, sig);
+      } catch {
+        /* already gone */
+      }
+    }
+    // Belt-and-braces: also pgid-kill in case the tree raced with a new spawn.
     try {
-      // Negative pid → process group.
       process.kill(-pgid, sig);
     } catch {
-      try {
-        process.kill(pid, sig);
-      } catch {
-        /* gone */
-      }
+      /* */
     }
   };
 
   db.insert(events)
-    .values({ app_id: appId, user_login: userLogin ?? null, level: 'info', msg: `stop request (pid ${pid})` })
+    .values({
+      app_id: appId,
+      user_login: userLogin ?? null,
+      level: 'info',
+      msg: `stop request (root pid ${pid}, tree size ${tree.length})`
+    })
     .run();
-  tryKill('SIGTERM');
+  signalAll('SIGTERM');
 
+  // Wait up to 5s for the whole tree to die — not just the root. A web server
+  // that handles SIGTERM gracefully takes a beat; turbo workers usually go
+  // immediately.
   const start = Date.now();
   while (Date.now() - start < 5000) {
-    if (!pidAlive(pid)) break;
+    if (!tree.some((p) => pidAlive(p))) break;
     await new Promise((r) => setTimeout(r, 150));
   }
-  if (pidAlive(pid)) {
-    tryKill('SIGKILL');
-    db.insert(events).values({ app_id: appId, level: 'warn', msg: 'SIGKILL after 5s timeout' }).run();
-    await new Promise((r) => setTimeout(r, 200));
+
+  const survivors = tree.filter((p) => pidAlive(p));
+  if (survivors.length > 0) {
+    for (const p of survivors) {
+      try {
+        process.kill(p, 'SIGKILL');
+      } catch {
+        /* */
+      }
+    }
+    db.insert(events)
+      .values({
+        app_id: appId,
+        level: 'warn',
+        msg: `SIGKILL after 5s: ${survivors.length} survivor(s) [${survivors.slice(0, 8).join(',')}${survivors.length > 8 ? '…' : ''}]`
+      })
+      .run();
+    await new Promise((r) => setTimeout(r, 250));
   }
   // Mark stopped if still open.
   const open = db.select().from(runs).where(eq(runs.id, runId)).get();
@@ -231,6 +295,61 @@ async function killByPid(
       .run();
   }
   live.delete(appId);
+  return { stopped: true };
+}
+
+/**
+ * Kill whatever process is currently listening on `port` (loopback / wildcard
+ * binds only — never the tailscaled per-tailnet-IP proxy listener). Used as
+ * the fallback when the user clicks Stop on an app that wasn't started by
+ * Berth, so we have no managed run to terminate.
+ */
+export async function stopExternalOnPort(
+  port: number,
+  appId: string,
+  userLogin?: string | null
+): Promise<{ stopped: boolean; reason?: string }> {
+  const listeners = await listListeners();
+  const local = listeners.find((l) => l.port === port && l.isLocal && isLocalBind(l.host));
+  if (!local?.pid) return { stopped: false, reason: `No local listener on :${port}` };
+  const info = pidInfo(local.pid);
+  // Critical: DO NOT use negative pgid here. For Berth-supervised apps the
+  // pgid kill is fine because each managed run is its own pgid leader. But
+  // an *external* listener may be a child under a monorepo runner (think
+  // `turbo run dev --filter=<app>` started from a single systemd unit) —
+  // all of that fleet's per-app dev servers share the script's pgid. Killing
+  // -pgid would take down every sibling, then `Restart=always` on the unit
+  // would bring them all back. Targeting the listener PID directly stops
+  // just this one app; the parent runner decides what to do, which is the
+  // per-app control the user wants.
+  db.insert(events)
+    .values({
+      app_id: appId,
+      user_login: userLogin ?? null,
+      level: 'info',
+      msg: `stop external (pid ${local.pid}, pgid ${info?.pgid ?? '?'}, cmd ${local.cmd ?? '?'})`
+    })
+    .run();
+  const tryKill = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(local.pid!, sig);
+    } catch {
+      /* gone */
+    }
+  };
+  tryKill('SIGTERM');
+  const started = Date.now();
+  while (Date.now() - started < 4000) {
+    if (!pidAlive(local.pid)) break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  if (pidAlive(local.pid)) {
+    tryKill('SIGKILL');
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (pidAlive(local.pid)) {
+    return { stopped: false, reason: `pid ${local.pid} survived SIGKILL (likely owned by another user)` };
+  }
   return { stopped: true };
 }
 
