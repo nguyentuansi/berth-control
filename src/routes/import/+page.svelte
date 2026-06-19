@@ -16,7 +16,7 @@
 <p class="b-muted">
   Berth bootstraps its registry from a markdown table — default
   <code class="b-mono">~/PORTS.md</code>, or whatever
-  <code class="b-mono">BERTH_PORTS_MD</code> points to. Re-import to pick up rows
+  <code class="b-mono">HARBORCTL_PORTS_MD</code> points to. Re-import to pick up rows
   you've added since the last sync. Existing apps keep their
   <code class="b-mono">start_cmd</code> and other Berth-only overrides.
 </p>

@@ -5,10 +5,10 @@ import { db, schema } from './db/index.js';
 import { events } from './db/schema.js';
 
 // Berth optionally bootstraps its registry from a PORTS.md file. Point it at
-// your own table with the `BERTH_PORTS_MD` env var; default is `~/PORTS.md`.
+// your own table with the `HARBORCTL_PORTS_MD` env var; default is `~/PORTS.md`.
 // (If neither exists, Berth starts with an empty registry — add apps via the UI.)
 const DEFAULT_PORTS_MD =
-  process.env.BERTH_PORTS_MD ?? resolve(homedir(), 'PORTS.md');
+  process.env.HARBORCTL_PORTS_MD ?? resolve(homedir(), 'PORTS.md');
 
 export interface PortsMdRow {
   id: string;

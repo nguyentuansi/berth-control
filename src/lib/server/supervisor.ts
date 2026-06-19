@@ -7,7 +7,7 @@ import { db } from './db/index.js';
 import { apps, runs, events, log_chunks, type App, type Run } from './db/schema.js';
 import { pidAlive, pidInfo, listListeners, isLocalBind } from './prober.js';
 
-const LOG_ROOT = resolve(homedir(), '.berth/logs');
+const LOG_ROOT = resolve(homedir(), '.harborctl/logs');
 
 interface LiveProc {
   app_id: string;

@@ -15,21 +15,21 @@ bun run preview         # run the prod build
 bun run db:push         # apply Drizzle schema diff to the SQLite DB
 bun run db:studio       # Drizzle Studio
 bun run demo:seed       # populate ./demo.db with fictional apps
-bun run demo:dev        # BERTH_DEMO=1 BERTH_DB=./demo.db, port 5203
+bun run demo:dev        # HARBORCTL_DEMO=1 HARBORCTL_DB=./demo.db, port 5203
 ```
 
 There is no test suite, no linter, and no formatter. `bun run check` is the only static verification step.
 
-Port 5202 is Berth's default; demo mode uses 5203. Both are claimed in your `PORTS.md` if you keep one. Do not pick a different port to dodge a conflict — investigate the squatter.
+Port 5202 is Harborctl's default; demo mode uses 5203. Both are claimed in your `PORTS.md` if you keep one. Do not pick a different port to dodge a conflict — investigate the squatter.
 
 ## Boot sequence
 
 `src/hooks.server.ts` runs `bootOnce()` on the first request, not at module load. Order:
 
 1. `ensureSchema()` — idempotent `CREATE TABLE IF NOT EXISTS` in `src/lib/server/db/migrate.ts`. This is the runtime path; `db:push` is dev-only.
-2. If `BERTH_DEMO=1`: skip the next two steps.
+2. If `HARBORCTL_DEMO=1`: skip the next two steps.
 3. `reattachOnBoot()` — scans `runs` rows with `stopped_at IS NULL`, checks `pidAlive`, and re-claims the in-memory `Map` in `supervisor.ts`. Survives Vite HMR because PIDs are persisted.
-4. `importPortsMd()` — parses `~/PORTS.md` (or `BERTH_PORTS_MD`) into the `apps` table.
+4. `importPortsMd()` — parses `~/PORTS.md` (or `HARBORCTL_PORTS_MD`) into the `apps` table.
 
 Then `identify(event)` runs on every request and assigns `event.locals.user`.
 
@@ -47,7 +47,7 @@ Then `identify(event)` runs on every request and assigns `event.locals.user`.
 
 **Auth (`src/lib/server/tailscale.ts`).** Identity comes from the `Tailscale-User-Login` request header, but it's trusted *only* when the request arrives via loopback (that's the same boundary `tailscale serve` enforces — it terminates TLS on the tailnet side and forwards plaintext to 127.0.0.1, injecting the header). Direct non-loopback requests carrying that header are rejected. First identified visitor is promoted to admin; if `users` ends up with zero admins, the next request self-heals. Loopback requests without the header fall back to the OS user, so `curl 127.0.0.1:5202` works from the same box.
 
-**Demo mode (`BERTH_DEMO=1`).** Swaps the live-state pipeline for a canned snapshot (`src/lib/server/demo.ts`), skips PORTS.md import + supervisor re-attach, and makes start/stop/restart endpoints no-ops. Use it for screenshots. Anything that touches the live pipeline must check `isDemoMode()` and short-circuit.
+**Demo mode (`HARBORCTL_DEMO=1`).** Swaps the live-state pipeline for a canned snapshot (`src/lib/server/demo.ts`), skips PORTS.md import + supervisor re-attach, and makes start/stop/restart endpoints no-ops. Use it for screenshots. Anything that touches the live pipeline must check `isDemoMode()` and short-circuit.
 
 ## Schema
 
@@ -57,15 +57,15 @@ Single SQLite database (WAL mode), schema in `src/lib/server/db/schema.ts`. Tabl
 
 ## PORTS.md format
 
-Markdown table parsed by `src/lib/server/ports-md.ts`. Columns: `Port | Project | Path | Proto | Tailscale | Systemd Service | Notes`. Anchor pattern: when a `Path` ends with `(apps/foo)`, subsequent rows with relative paths (`apps/jobs`) resolve against that monorepo root. Berth runs without PORTS.md — apps can be added from the UI.
+Markdown table parsed by `src/lib/server/ports-md.ts`. Columns: `Port | Project | Path | Proto | Tailscale | Systemd Service | Notes`. Anchor pattern: when a `Path` ends with `(apps/foo)`, subsequent rows with relative paths (`apps/jobs`) resolve against that monorepo root. Harborctl runs without PORTS.md — apps can be added from the UI.
 
 ## Allowed dev-server hosts
 
-`vite.config.ts` allows `localhost`, `127.0.0.1`, and `.ts.net` (every Tailscale tailnet lives under that TLD). Extra hosts come from `BERTH_ALLOWED_HOSTS` (comma-separated, leading dot = subdomain wildcard). Don't hardcode tailnet names in source.
+`vite.config.ts` allows `localhost`, `127.0.0.1`, and `.ts.net` (every Tailscale tailnet lives under that TLD). Extra hosts come from `HARBORCTL_ALLOWED_HOSTS` (comma-separated, leading dot = subdomain wildcard). Don't hardcode tailnet names in source.
 
 ## Conventions worth knowing
 
 - File extensions in imports use `.js` even for `.ts` source (`from './db/index.js'`) — required by Node ESM resolution at runtime. Keep this consistent.
 - `$lib` alias is set in `svelte.config.js`; use it instead of relative paths into `src/lib/`.
 - Drizzle is used for queries (`db.select().from(...).where(...).get()`). Stick to it — no raw `better-sqlite3` calls outside `db/` and `migrate.ts`.
-- Process spawning, file system writes outside `~/.berth/`, and `ss`/`tailscale` invocations all live in `src/lib/server/`. Don't introduce new shell-outs from route handlers — wrap them in a server module.
+- Process spawning, file system writes outside `~/.harborctl/`, and `ss`/`tailscale` invocations all live in `src/lib/server/`. Don't introduce new shell-outs from route handlers — wrap them in a server module.
