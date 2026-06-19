@@ -1,6 +1,6 @@
 // Demo mode — believable-but-fictional content used for marketing screenshots.
 //
-// Activate with HARBORCTL_DEMO=1 (typically alongside HARBORCTL_DB=./demo.db so it
+// Activate with BERTH_CONTROL_DEMO=1 (typically alongside BERTH_CONTROL_DB=./demo.db so it
 // can't touch your real registry). When on:
 //   • PORTS.md is NOT auto-imported on boot.
 //   • The process supervisor doesn't try to re-attach to PIDs at startup.
@@ -10,7 +10,7 @@
 // Seed the matching app rows via `bun run demo:seed` (see scripts/seed-demo.ts).
 
 export function isDemoMode(): boolean {
-  return process.env.HARBORCTL_DEMO === '1' || process.env.HARBORCTL_DEMO === 'true';
+  return process.env.BERTH_CONTROL_DEMO === '1' || process.env.BERTH_CONTROL_DEMO === 'true';
 }
 
 export interface DemoApp {

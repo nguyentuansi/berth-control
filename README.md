@@ -1,30 +1,30 @@
-# Harborctl
+# berth-control
 
 A local-only control panel for every dev server on your machine. One dashboard, one keystroke, one source of truth for "what's running and where."
 
 Built for the developer who has dozens of side projects across different ports, frameworks, and runtimes and would rather not memorize them all.
 
-![Harborctl dashboard — apps grouped by project, live state via SSE, tailnet pills, healthcheck latencies](static/screenshots/dashboard.png)
+![berth-control dashboard — apps grouped by project, live state via SSE, tailnet pills, healthcheck latencies](static/screenshots/dashboard.png)
 
 ## What it does
 
 - **Discovers and lists every dev app on your box** from a markdown registry (`~/PORTS.md`) — no config files per project, no per-app YAML.
 - **Live state** — every two seconds it parses `ss -tlnp`, cross-references managed PIDs, and pings healthcheck URLs. Green dot = actually serving; red dot with a "502" pill = mapped via Tailscale but the proxy target is dead.
-- **Start / stop / restart** any app from the dashboard. Harborctl spawns processes in their own process group so children survive Harborctl restarts; SIGTERM-then-SIGKILL on stop.
+- **Start / stop / restart** any app from the dashboard. berth-control spawns processes in their own process group so children survive berth-control restarts; SIGTERM-then-SIGKILL on stop.
 - **Live logs** stream per-app over SSE. Search, filter stderr-only, follow tail, download the whole run.
 - **Snapshots** save the current up-set under a name ("frontend stack", "review mode") and restore it with one click. ![Snapshots page](static/screenshots/snapshots.png)
-- **Tailscale-aware** — reads `tailscale serve status` and shows which apps are exposed on your tailnet (or publicly via Funnel). The "Open" button auto-switches between loopback and tailnet URL depending on which pipeline you're viewing Harborctl through. From your phone via tailnet, the link goes to the tailnet URL, not your phone's own `127.0.0.1`.
-- **Tailscale identity** for auth — when Harborctl runs behind `tailscale serve`, it reads `Tailscale-User-Login` headers. First visitor becomes admin. Direct non-loopback access is rejected.
+- **Tailscale-aware** — reads `tailscale serve status` and shows which apps are exposed on your tailnet (or publicly via Funnel). The "Open" button auto-switches between loopback and tailnet URL depending on which pipeline you're viewing berth-control through. From your phone via tailnet, the link goes to the tailnet URL, not your phone's own `127.0.0.1`.
+- **Tailscale identity** for auth — when berth-control runs behind `tailscale serve`, it reads `Tailscale-User-Login` headers. First visitor becomes admin. Direct non-loopback access is rejected.
 - **Cmd-K palette** for fuzzy search across apps and actions.
-- **Auto-filled start commands** — Harborctl peeks at each project's `package.json` / `Cargo.toml` / `gradlew` and suggests `bun run dev` / `cargo run` / etc.
+- **Auto-filled start commands** — berth-control peeks at each project's `package.json` / `Cargo.toml` / `gradlew` and suggests `bun run dev` / `cargo run` / etc.
 
 No Docker. No Swarm. No cloud. Just a SvelteKit app on one port.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/nguyentuansi/harborctl.git ~/Development/harborctl
-cd ~/Development/harborctl
+git clone https://github.com/nguyentuansi/berth-control.git ~/Development/berth-control
+cd ~/Development/berth-control
 bun install
 bun run dev
 ```
@@ -42,22 +42,22 @@ PORT=5202 node build/index.js
 
 ### Systemd user unit (auto-start at login)
 
-Create `~/.config/systemd/user/harborctl.service`:
+Create `~/.config/systemd/user/berth-control.service`:
 
 ```ini
 [Unit]
-Description=Harborctl — local control panel
+Description=berth-control — local control panel
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Development/harborctl
+WorkingDirectory=%h/Development/berth-control
 ExecStart=/usr/bin/env node build/index.js
 Restart=on-failure
 Environment=PORT=5202
 Environment=HOST=127.0.0.1
 # Optional — comma-separated. Leading dot matches any subdomain.
-# Environment=HARBORCTL_ALLOWED_HOSTS=.your-tailnet.ts.net
+# Environment=BERTH_CONTROL_ALLOWED_HOSTS=.your-tailnet.ts.net
 
 [Install]
 WantedBy=default.target
@@ -67,7 +67,7 @@ Then:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now harborctl.service
+systemctl --user enable --now berth-control.service
 ```
 
 ### Tailscale serve (access from your phone)
@@ -76,21 +76,21 @@ systemctl --user enable --now harborctl.service
 sudo tailscale serve --bg --https=5202 http://127.0.0.1:5202
 ```
 
-Harborctl now reachable at `https://<your-machine>.<your-tailnet>.ts.net:5202` for any device on your tailnet.
+berth-control now reachable at `https://<your-machine>.<your-tailnet>.ts.net:5202` for any device on your tailnet.
 
 ## Environment variables
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HARBORCTL_PORT` / `PORT` | `5202` | Port Harborctl binds to |
-| `HARBORCTL_HOST` / `HOST` | `127.0.0.1` | Bind address — keep on loopback unless you know what you're doing |
-| `HARBORCTL_DB` | `~/.harborctl/harborctl.db` | SQLite location (WAL mode) |
-| `HARBORCTL_PORTS_MD` | `~/PORTS.md` | Registry markdown file. If absent, registry starts empty. |
-| `HARBORCTL_ALLOWED_HOSTS` | `(empty)` | Comma-separated extra hostnames for Vite's `allowedHosts`. Loopback and `.ts.net` (Tailscale) are always allowed by default. Set this only for LAN hostnames or custom domains (`myapp.lan`, `.example.com`). |
+| `BERTH_CONTROL_PORT` / `PORT` | `5202` | Port berth-control binds to |
+| `BERTH_CONTROL_HOST` / `HOST` | `127.0.0.1` | Bind address — keep on loopback unless you know what you're doing |
+| `BERTH_CONTROL_DB` | `~/.berth-control/berth-control.db` | SQLite location (WAL mode) |
+| `BERTH_CONTROL_PORTS_MD` | `~/PORTS.md` | Registry markdown file. If absent, registry starts empty. |
+| `BERTH_CONTROL_ALLOWED_HOSTS` | `(empty)` | Comma-separated extra hostnames for Vite's `allowedHosts`. Loopback and `.ts.net` (Tailscale) are always allowed by default. Set this only for LAN hostnames or custom domains (`myapp.lan`, `.example.com`). |
 
 ## PORTS.md format
 
-Harborctl parses a markdown table of this shape on boot:
+berth-control parses a markdown table of this shape on boot:
 
 ```markdown
 | Port  | Project              | Path                                  | Proto | Tailscale | Systemd Service | Notes              |
@@ -101,9 +101,9 @@ Harborctl parses a markdown table of this shape on boot:
 | 5432  | postgres             | ~/Work/acme/infra/databases           | http  | no        | -               | Local replica      |
 ```
 
-Anchor pattern: when a row's `Path` ends with `(apps/foo)`, Harborctl treats the parent as a monorepo root and resolves subsequent rows with relative paths like `apps/jobs` against that root.
+Anchor pattern: when a row's `Path` ends with `(apps/foo)`, berth-control treats the parent as a monorepo root and resolves subsequent rows with relative paths like `apps/jobs` against that root.
 
-You don't *need* a PORTS.md to use Harborctl — you can add apps directly from the UI. But if you keep a registry anyway, Harborctl becomes the live view of it.
+You don't *need* a PORTS.md to use berth-control — you can add apps directly from the UI. But if you keep a registry anyway, berth-control becomes the live view of it.
 
 ## Architecture
 
@@ -138,7 +138,7 @@ You don't *need* a PORTS.md to use Harborctl — you can add apps directly from 
 
 ### Process supervision
 
-Harborctl spawns each app's `start_cmd` with `detached: true`, making the child its own process-group leader. The PID + pgid are persisted to the `runs` table. On Harborctl restart, `reattachOnBoot()` scans open runs and re-attaches to any PID still alive. Stop sends `SIGTERM` to the negative pgid (kills the whole tree), waits 5 seconds, then escalates to `SIGKILL`.
+berth-control spawns each app's `start_cmd` with `detached: true`, making the child its own process-group leader. The PID + pgid are persisted to the `runs` table. On berth-control restart, `reattachOnBoot()` scans open runs and re-attaches to any PID still alive. Stop sends `SIGTERM` to the negative pgid (kills the whole tree), waits 5 seconds, then escalates to `SIGKILL`.
 
 ### Live state
 
@@ -201,12 +201,12 @@ bun run db:studio       # browse the SQLite DB in Drizzle Studio
 
 # Demo mode (for marketing screenshots — fake apps, canned live state):
 bun run demo:seed       # populates ./demo.db with fictional apps
-bun run demo:dev        # runs Harborctl with HARBORCTL_DEMO=1 HARBORCTL_DB=./demo.db
+bun run demo:dev        # runs berth-control with BERTH_CONTROL_DEMO=1 BERTH_CONTROL_DB=./demo.db
 ```
 
 ### Demo mode
 
-`HARBORCTL_DEMO=1` swaps the live-state pipeline for a canned snapshot tuned to show off every UI feature (mixed up/down, tailnet badges, one Funnel pill, a stale-mapping "502" diagnostic, healthcheck latencies). PORTS.md is not imported, the supervisor is not re-attached, and start/stop endpoints become no-ops — so you can screenshot the UI without your real data or the risk of spawning anything. See `src/lib/server/demo.ts` for the fixture and `scripts/seed-demo.ts` for the seeder.
+`BERTH_CONTROL_DEMO=1` swaps the live-state pipeline for a canned snapshot tuned to show off every UI feature (mixed up/down, tailnet badges, one Funnel pill, a stale-mapping "502" diagnostic, healthcheck latencies). PORTS.md is not imported, the supervisor is not re-attached, and start/stop endpoints become no-ops — so you can screenshot the UI without your real data or the risk of spawning anything. See `src/lib/server/demo.ts` for the fixture and `scripts/seed-demo.ts` for the seeder.
 
 The dev server runs SSR through Vite. The supervisor module holds running children in an in-memory `Map` — Vite HMR reloads can theoretically lose that map, but since PIDs are persisted, `reattachOnBoot()` recovers them on the next request. Worst case: stop a managed app and restart it.
 
@@ -220,10 +220,10 @@ Schema lives in `src/lib/server/db/schema.ts` (Drizzle). The runtime path uses `
 
 ## Security notes
 
-- Harborctl is **not designed to be exposed to the public internet**. It runs arbitrary shell commands from its database. Keep it on `127.0.0.1` or behind `tailscale serve` (tailnet only).
-- The identity header check trusts `Tailscale-User-Login` *only* when the request reaches Harborctl via loopback — same boundary as `tailscale serve` operates within. Direct non-loopback requests with that header will not be trusted.
+- berth-control is **not designed to be exposed to the public internet**. It runs arbitrary shell commands from its database. Keep it on `127.0.0.1` or behind `tailscale serve` (tailnet only).
+- The identity header check trusts `Tailscale-User-Login` *only* when the request reaches berth-control via loopback — same boundary as `tailscale serve` operates within. Direct non-loopback requests with that header will not be trusted.
 - `start_cmd` is run via `/bin/bash -c`. If you import apps from a registry you don't control, treat them as code, not config.
-- Harborctl has zero authentication when run on pure loopback by an OS user — it assumes you trust whoever is logged in to the machine.
+- berth-control has zero authentication when run on pure loopback by an OS user — it assumes you trust whoever is logged in to the machine.
 
 ## License
 
@@ -231,8 +231,6 @@ MIT — see [LICENSE](./LICENSE).
 
 ## Naming
 
-*Harborctl* = harbor (the larger ecosystem of services running on your machine) + *ctl* (the Unix-tradition control-plane suffix). It manages the harbor — every dock, every ship, every port.
+A *berth* is the slot at a dock where a single ship moors. Felt right for an app where each registered service has one port and one home. *berth-control* is the dashboard that watches every slot — the control plane for the whole harbor of dev servers on your machine.
 
-A *berth* is the slot at a dock where a single ship moors. The original name (Berth) felt right for an app where each registered service has one port and one home, but the harbor metaphor scales further — controls, monitoring, snapshots — and `harborctl` makes that explicit.
-
-> Formerly known as **Berth** (renamed 2026-06-19 to free the name for an unrelated AI-agent harbor platform).
+> Formerly named **Berth**, renamed 2026-06-19 to `berth-control` to free the shorter name for an unrelated AI-agent harbor platform. Same scope, same port (5202), same intent — just `-control` on the end.

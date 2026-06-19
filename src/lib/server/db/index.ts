@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import * as schema from './schema.js';
 
-const dbPath = process.env.HARBORCTL_DB ?? resolve(homedir(), '.harborctl/harborctl.db');
+const dbPath = process.env.BERTH_CONTROL_DB ?? resolve(homedir(), '.berth-control/berth-control.db');
 mkdirSync(dirname(dbPath), { recursive: true });
 
 const sqlite = new Database(dbPath);

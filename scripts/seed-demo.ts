@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 // Seed the demo SQLite with believable-but-fictional apps for screenshots.
 //
-//   HARBORCTL_DB=./demo.db bun run scripts/seed-demo.ts
+//   BERTH_CONTROL_DB=./demo.db bun run scripts/seed-demo.ts
 //
-// Then start the dev server with HARBORCTL_DEMO=1 HARBORCTL_DB=./demo.db
+// Then start the dev server with BERTH_CONTROL_DEMO=1 BERTH_CONTROL_DB=./demo.db
 // (or `bun run demo:dev` from package.json).
 
 // Note: this script runs under Bun (the rest of the app runs under Node via
@@ -16,7 +16,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DEMO_APPS } from '../src/lib/server/demo.js';
 
-const dbPath = process.env.HARBORCTL_DB ?? resolve(process.cwd(), 'demo.db');
+const dbPath = process.env.BERTH_CONTROL_DB ?? resolve(process.cwd(), 'demo.db');
 mkdirSync(dirname(resolve(dbPath)), { recursive: true });
 
 const sqlite = new Database(dbPath, { create: true });
@@ -113,5 +113,5 @@ const tx = sqlite.transaction(() => {
 tx();
 
 console.log(`Seeded ${DEMO_APPS.length} demo apps to ${dbPath}`);
-console.log(`Run: HARBORCTL_DEMO=1 HARBORCTL_DB=${dbPath} bun run dev`);
+console.log(`Run: BERTH_CONTROL_DEMO=1 BERTH_CONTROL_DB=${dbPath} bun run dev`);
 sqlite.close();

@@ -1,5 +1,5 @@
 {
-  "name": "harborctl",
+  "name": "berth-control",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,12 +15,12 @@
     "local-development",
     "dev-server"
   ],
-  "homepage": "https://github.com/nguyentuansi/harborctl#readme",
+  "homepage": "https://github.com/nguyentuansi/berth-control#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nguyentuansi/harborctl.git"
+    "url": "git+https://github.com/nguyentuansi/berth-control.git"
   },
-  "bugs": "https://github.com/nguyentuansi/harborctl/issues",
+  "bugs": "https://github.com/nguyentuansi/berth-control/issues",
   "license": "MIT",
   "author": "nguyentuansi",
   "scripts": {
@@ -30,8 +30,8 @@
     "start": "PORT=5202 HOST=127.0.0.1 node build/index.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "demo:seed": "HARBORCTL_DB=./demo.db bun run scripts/seed-demo.ts",
-    "demo:dev": "HARBORCTL_DEMO=1 HARBORCTL_DB=./demo.db bunx vite dev --port 5203 --host 127.0.0.1",
+    "demo:seed": "BERTH_CONTROL_DB=./demo.db bun run scripts/seed-demo.ts",
+    "demo:dev": "BERTH_CONTROL_DEMO=1 BERTH_CONTROL_DB=./demo.db bunx vite dev --port 5203 --host 127.0.0.1",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
