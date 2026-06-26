@@ -37,11 +37,27 @@
     misc_temps: Record<string, number> | null;
   };
 
+  type Threshold = {
+    key: string;
+    label: string;
+    unit: string;
+    defaultWarn: number | null;
+    warn_value: number | null;
+    cooldown_secs: number;
+    last_fired_at: number | null;
+  };
+  type Alert = { id: number; ts: number; level: string; msg: string };
+
   let live: Sample | null = $state(null);
   let history: Sample[] = $state([]);
   let connected = $state(false);
   let loadError = $state<string | null>(null);
   let es: EventSource | null = null;
+
+  let thresholds = $state<Threshold[]>([]);
+  let alerts = $state<Alert[]>([]);
+  let editing = $state(false);
+  let saving = $state(false);
 
   const ramUsedPct = $derived.by(() => {
     if (!live?.mem_total_mb || live?.mem_available_mb == null) return null;
@@ -100,6 +116,42 @@
     return `${gb.toFixed(1)} GB`;
   }
 
+  async function loadThresholds() {
+    try {
+      const r = await fetch('/api/monitor/thresholds');
+      if (r.ok) thresholds = (await r.json()).thresholds ?? [];
+    } catch {
+      /* */
+    }
+  }
+  async function loadAlerts() {
+    try {
+      const r = await fetch('/api/monitor/alerts?limit=20');
+      if (r.ok) alerts = (await r.json()).alerts ?? [];
+    } catch {
+      /* */
+    }
+  }
+  async function saveThresholds() {
+    saving = true;
+    try {
+      const r = await fetch('/api/monitor/thresholds', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          changes: thresholds.map((t) => ({
+            key: t.key,
+            warn_value: t.warn_value,
+            cooldown_secs: t.cooldown_secs
+          }))
+        })
+      });
+      if (r.ok) editing = false;
+    } finally {
+      saving = false;
+    }
+  }
+
   async function loadHistory() {
     try {
       const since = Date.now() - 60 * 60 * 1000;
@@ -117,21 +169,27 @@
 
   onMount(() => {
     void loadHistory();
+    void loadThresholds();
+    void loadAlerts();
     es = new EventSource('/api/monitor/state');
     es.addEventListener('meta', () => {
       connected = true;
     });
     es.addEventListener('sample', (ev: MessageEvent) => {
       try {
-        const payload = JSON.parse(ev.data) as { ts: number; sample: Sample };
+        const payload = JSON.parse(ev.data) as {
+          ts: number;
+          sample: Sample;
+          fired?: { key: string }[];
+        };
         live = payload.sample;
-        // Append to history if the timestamp moved forward — keeps the
-        // sparkline in sync with the live cards without needing a refetch.
         const last = history[history.length - 1];
         if (!last || payload.ts > last.ts) history.push({ ...payload.sample, ts: payload.ts });
-        // Drop anything older than 60 minutes so the sparkline stays bounded.
         const cutoff = Date.now() - 60 * 60 * 1000;
         while (history.length > 0 && history[0].ts < cutoff) history.shift();
+        // If any alerts fired, refresh the log so the user sees them
+        // without a manual reload.
+        if (payload.fired && payload.fired.length > 0) void loadAlerts();
       } catch {
         /* */
       }
@@ -268,6 +326,69 @@
     </Card>
   {/if}
 
+  <!-- Threshold editor + alert log -->
+  <Card class="card card-wide">
+    {#snippet children()}
+      <div class="card-head">
+        <AlertTriangle size={14} />
+        <strong>Alerts</strong>
+        <span class="card-head-trail">
+          {#if editing}
+            <button class="b-btn small" onclick={() => (editing = false)}>Cancel</button>
+            <button class="b-btn small primary" disabled={saving} onclick={() => void saveThresholds()}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          {:else}
+            <button class="b-btn small" onclick={() => (editing = true)}>Edit thresholds</button>
+          {/if}
+        </span>
+      </div>
+
+      {#if editing}
+        <div class="threshold-grid">
+          {#each thresholds as t (t.key)}
+            <label class="threshold">
+              <span class="threshold-label">{t.label} <span class="b-mute2">({t.unit})</span></span>
+              <input
+                type="number"
+                step="0.1"
+                class="b-input"
+                placeholder="disabled"
+                bind:value={t.warn_value}
+              />
+            </label>
+          {/each}
+        </div>
+        <p class="threshold-hint">
+          Set a value to enable alerts for that metric; clear to disable. Alerts deduplicate per
+          metric with a cooldown (default 15 min). Triggered alerts appear in the log below and in
+          the dashboard's events feed.
+        </p>
+      {:else}
+        <div class="threshold-summary">
+          {#each thresholds as t (t.key)}
+            <span class="threshold-pill" class:disabled={t.warn_value == null}>
+              {t.label}: {t.warn_value == null ? 'off' : `${t.warn_value}${t.unit}`}
+            </span>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="alert-log">
+        {#if alerts.length === 0}
+          <p class="b-mute2 small">No alerts in the last 24 hours.</p>
+        {:else}
+          {#each alerts as a (a.id)}
+            <div class="alert-row">
+              <span class="alert-ts b-mono">{new Date(a.ts).toLocaleString()}</span>
+              <span class="alert-msg">{a.msg}</span>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    {/snippet}
+  </Card>
+
   <!-- Misc temps (hwmon / powermetrics) -->
   {#if live?.misc_temps && Object.keys(live.misc_temps).length > 0}
     <Card class="card card-wide">
@@ -389,4 +510,68 @@
       grid-column: span 1;
     }
   }
+
+  .card-head-trail {
+    margin-left: auto;
+    display: inline-flex;
+    gap: 6px;
+  }
+  .card-head { display: flex; align-items: center; }
+
+  .threshold-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .threshold { display: flex; flex-direction: column; gap: 4px; }
+  .threshold-label { font-size: 11.5px; color: var(--b-text-2); }
+  .threshold input {
+    font-size: 13px;
+    padding: 6px 8px;
+  }
+  .threshold-hint {
+    font-size: 11.5px;
+    color: var(--b-text-3);
+    line-height: 1.5;
+    margin: 8px 0 0;
+  }
+
+  .threshold-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .threshold-pill {
+    font-size: 11.5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--b-surface-2);
+    color: var(--b-text-2);
+    border: 1px solid var(--b-border);
+  }
+  .threshold-pill.disabled {
+    color: var(--b-text-3);
+    opacity: 0.65;
+  }
+
+  .alert-log {
+    margin-top: 10px;
+    border-top: 1px solid var(--b-border);
+    padding-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .small { font-size: 12.5px; margin: 0; }
+  .alert-row {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    gap: 10px;
+    font-size: 12px;
+    padding: 3px 0;
+  }
+  .alert-ts { color: var(--b-text-3); }
+  .alert-msg { color: var(--b-text); }
 </style>

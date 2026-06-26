@@ -4,6 +4,7 @@ import { lt } from 'drizzle-orm';
 import { linuxSensors } from './sensors-linux.js';
 import { macosSensors } from './sensors-macos.js';
 import type { HostSample, SensorModule } from './sensors-shared.js';
+import { ensureDefaultThresholds, evaluateAlerts, type FiredAlert } from './alerts.js';
 
 // In-process host-monitoring collector.
 //
@@ -58,10 +59,17 @@ function selectModule(): SensorModule {
  *  sample tick; null until the first tick lands. */
 let latestSample: { ts: number; sample: HostSample } | null = null;
 
+export interface TickSnapshot {
+  ts: number;
+  sample: HostSample;
+  /** Alerts that fired on THIS tick. Empty array for normal ticks. */
+  fired: FiredAlert[];
+}
+
 /** Listeners notified after each tick — drives the SSE feed without a
  *  separate poll. Subscribers are responsible for removing themselves with
  *  the returned unsubscribe function. */
-const listeners = new Set<(snapshot: { ts: number; sample: HostSample }) => void>();
+const listeners = new Set<(snapshot: TickSnapshot) => void>();
 
 let running = false;
 let stopRequested = false;
@@ -71,9 +79,7 @@ export function getLatestSample(): { ts: number; sample: HostSample } | null {
   return latestSample;
 }
 
-export function subscribeToSamples(
-  fn: (snapshot: { ts: number; sample: HostSample }) => void
-): () => void {
+export function subscribeToSamples(fn: (snapshot: TickSnapshot) => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
@@ -87,6 +93,7 @@ export async function startHostMonitor(): Promise<void> {
 
   const cfg = loadConfig();
   const sensors = selectModule();
+  ensureDefaultThresholds();
 
   try {
     const { availability, notes } = await sensors.init();
@@ -111,9 +118,24 @@ export async function startHostMonitor(): Promise<void> {
       const ts = Date.now();
       latestSample = { ts, sample };
       persistSample(ts, sample);
+
+      // Evaluate alerts AFTER persisting so the threshold check sees the
+      // same snapshot the dashboard does. Any fired alerts get dispatched
+      // to phase E's push subscribers (no-op for now — the export is empty
+      // until phase E lands its hook).
+      let fired: FiredAlert[] = [];
+      try {
+        fired = evaluateAlerts(sample);
+      } catch (e) {
+        console.warn(
+          '[monitor] alert evaluation failed:',
+          e instanceof Error ? e.message : String(e)
+        );
+      }
+
       for (const fn of listeners) {
         try {
-          fn({ ts, sample });
+          fn({ ts, sample, fired });
         } catch {
           /* listener errors must never break the tick */
         }
