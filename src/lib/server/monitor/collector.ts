@@ -1,0 +1,201 @@
+import { db } from '../db/index.js';
+import { host_readings } from '../db/schema.js';
+import { lt } from 'drizzle-orm';
+import { linuxSensors } from './sensors-linux.js';
+import { macosSensors } from './sensors-macos.js';
+import type { HostSample, SensorModule } from './sensors-shared.js';
+
+// In-process host-monitoring collector.
+//
+// Picks the platform module at boot (linuxSensors vs macosSensors, additive
+// per the cross-platform rule — never substitute), then setIntervals on the
+// user-configured cadence. Adaptive cadence: when RAM is under pressure (>=
+// adaptive_threshold_pct used), the sample rate switches from `intervalSecs`
+// to `fastIntervalSecs` so the time-series shows the pressure ramp clearly.
+//
+// Configuration via env (all with safe defaults — no .env required to boot):
+//   BERTH_CONTROL_MONITOR_INTERVAL_SECS       (default 60) normal cadence
+//   BERTH_CONTROL_MONITOR_FAST_INTERVAL_SECS  (default 10) under-pressure cadence
+//   BERTH_CONTROL_MONITOR_RAM_PRESSURE_PCT    (default 80) trigger for fast mode
+//   BERTH_CONTROL_MONITOR_RETENTION_DAYS      (default 90) drop rows older than this
+//
+// NEVER hardcode any user-specific value (hostname, tailnet domain, IPs,
+// interfaces). Anything machine-specific is discovered at runtime by the
+// platform sensor module.
+
+interface Config {
+  intervalSecs: number;
+  fastIntervalSecs: number;
+  ramPressurePct: number;
+  retentionDays: number;
+}
+
+function loadConfig(): Config {
+  const num = (k: string, d: number): number => {
+    const v = Number(process.env[k]);
+    return Number.isFinite(v) && v > 0 ? v : d;
+  };
+  return {
+    intervalSecs: num('BERTH_CONTROL_MONITOR_INTERVAL_SECS', 60),
+    fastIntervalSecs: num('BERTH_CONTROL_MONITOR_FAST_INTERVAL_SECS', 10),
+    ramPressurePct: num('BERTH_CONTROL_MONITOR_RAM_PRESSURE_PCT', 80),
+    retentionDays: num('BERTH_CONTROL_MONITOR_RETENTION_DAYS', 90)
+  };
+}
+
+function selectModule(): SensorModule {
+  if (process.platform === 'linux') return linuxSensors;
+  if (process.platform === 'darwin') return macosSensors;
+  // Unsupported platform — return a stub module so the rest of the pipeline
+  // still works (it just writes nulls forever).
+  return {
+    init: async () => ({ availability: {}, notes: [`unsupported platform: ${process.platform}`] }),
+    sample: async () => ({}) as HostSample
+  };
+}
+
+/** Last snapshot for the SSE feed in Phase C. Updated on every successful
+ *  sample tick; null until the first tick lands. */
+let latestSample: { ts: number; sample: HostSample } | null = null;
+
+/** Listeners notified after each tick — drives the SSE feed without a
+ *  separate poll. Subscribers are responsible for removing themselves with
+ *  the returned unsubscribe function. */
+const listeners = new Set<(snapshot: { ts: number; sample: HostSample }) => void>();
+
+let running = false;
+let stopRequested = false;
+let activeTimer: NodeJS.Timeout | null = null;
+
+export function getLatestSample(): { ts: number; sample: HostSample } | null {
+  return latestSample;
+}
+
+export function subscribeToSamples(
+  fn: (snapshot: { ts: number; sample: HostSample }) => void
+): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+/** Start the in-process collector. Idempotent — calling twice is a no-op so
+ *  bootOnce can re-call without thinking about it. */
+export async function startHostMonitor(): Promise<void> {
+  if (running) return;
+  running = true;
+  stopRequested = false;
+
+  const cfg = loadConfig();
+  const sensors = selectModule();
+
+  try {
+    const { availability, notes } = await sensors.init();
+    console.log(
+      `[monitor] platform=${process.platform} ` +
+        `cadence=${cfg.intervalSecs}s (fast ${cfg.fastIntervalSecs}s @ RAM>=${cfg.ramPressurePct}%) ` +
+        `retention=${cfg.retentionDays}d`
+    );
+    for (const n of notes) console.log(`[monitor] ${n}`);
+    const availList = Object.entries(availability)
+      .map(([k, v]) => `${k}=${v ? 'yes' : 'no'}`)
+      .join(' ');
+    if (availList) console.log(`[monitor] availability ${availList}`);
+  } catch (e) {
+    console.warn('[monitor] sensor init failed:', e instanceof Error ? e.message : String(e));
+  }
+
+  const tick = async () => {
+    if (stopRequested) return;
+    try {
+      const sample = await sensors.sample();
+      const ts = Date.now();
+      latestSample = { ts, sample };
+      persistSample(ts, sample);
+      for (const fn of listeners) {
+        try {
+          fn({ ts, sample });
+        } catch {
+          /* listener errors must never break the tick */
+        }
+      }
+    } catch (e) {
+      console.warn('[monitor] sample tick failed:', e instanceof Error ? e.message : String(e));
+    }
+
+    if (stopRequested) return;
+    const next = adaptiveDelayMs(cfg);
+    activeTimer = setTimeout(tick, next);
+    activeTimer.unref();
+  };
+
+  // Schedule retention sweep once an hour. unref'd so it doesn't keep berth
+  // alive at shutdown.
+  const retentionSweep = setInterval(() => {
+    try {
+      const cutoff = Date.now() - cfg.retentionDays * 86_400_000;
+      db.delete(host_readings).where(lt(host_readings.ts, new Date(cutoff))).run();
+    } catch {
+      /* */
+    }
+  }, 3_600_000);
+  retentionSweep.unref();
+
+  // Kick the first tick on a short delay so it doesn't race with bootOnce's
+  // other work.
+  activeTimer = setTimeout(tick, 1500);
+  activeTimer.unref();
+}
+
+export function stopHostMonitor(): void {
+  stopRequested = true;
+  if (activeTimer) {
+    clearTimeout(activeTimer);
+    activeTimer = null;
+  }
+  running = false;
+}
+
+function adaptiveDelayMs(cfg: Config): number {
+  if (!latestSample) return cfg.intervalSecs * 1000;
+  const s = latestSample.sample;
+  if (s.mem_total_mb != null && s.mem_available_mb != null && s.mem_total_mb > 0) {
+    const usedPct = ((s.mem_total_mb - s.mem_available_mb) / s.mem_total_mb) * 100;
+    if (usedPct >= cfg.ramPressurePct) return cfg.fastIntervalSecs * 1000;
+  }
+  return cfg.intervalSecs * 1000;
+}
+
+function persistSample(ts: number, s: HostSample): void {
+  const j = (v: unknown) => (v == null ? null : JSON.stringify(v));
+  try {
+    db.insert(host_readings)
+      .values({
+        ts: new Date(ts),
+        cpu_util_total: s.cpu_util_total,
+        cpu_util_cores: j(s.cpu_util_cores),
+        cpu_pkg_temp: s.cpu_pkg_temp,
+        cpu_core_temps: j(s.cpu_core_temps),
+        gpu_temp: s.gpu_temp,
+        gpu_power_w: s.gpu_power_w,
+        gpu_mem_used_mb: s.gpu_mem_used_mb,
+        gpu_mem_total_mb: s.gpu_mem_total_mb,
+        gpu_fan_pct: s.gpu_fan_pct,
+        gpu_util_pct: s.gpu_util_pct,
+        mem_total_mb: s.mem_total_mb,
+        mem_available_mb: s.mem_available_mb,
+        mem_buffers_mb: s.mem_buffers_mb,
+        mem_cached_mb: s.mem_cached_mb,
+        swap_total_mb: s.swap_total_mb,
+        swap_free_mb: s.swap_free_mb,
+        disk_total_gb: s.disk_total_gb,
+        disk_used_gb: s.disk_used_gb,
+        disk_avail_gb: s.disk_avail_gb,
+        net_per_iface: j(s.net_per_iface),
+        misc_temps: j(s.misc_temps)
+      })
+      .run();
+  } catch (e) {
+    console.warn('[monitor] persist failed:', e instanceof Error ? e.message : String(e));
+  }
+}
+

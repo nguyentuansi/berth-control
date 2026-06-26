@@ -64,7 +64,7 @@
   let addOpen = $state(false);
 
   // Collapsed project groups: { [groupName]: true }. Persisted across reloads.
-  // Shared across Active/Inactive sections — if you collapse "jarvis-miniapps",
+  // Shared across Active/Inactive sections — if you collapse "sample-monorepo",
   // it collapses in both sections (it's the same conceptual project).
   let collapsed: Record<string, boolean> = $state({});
 

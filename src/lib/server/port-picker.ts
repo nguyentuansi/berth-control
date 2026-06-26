@@ -41,7 +41,7 @@ export async function suggestPort(projectPath: string, kind: string): Promise<nu
 
     if (siblingPorts.length > 0) {
       // Group consecutive-ish siblings into clusters (gap ≤ 20). For e.g.
-      // nguyentuansi-v2 (13 apps at 2300-2312 plus one stray at 7784) we
+      // my-monorepo (13 apps at 2300-2312 plus one stray at 7784) we
       // want to append to the dense 2300s cluster, not after the outlier.
       const bestCluster = densestCluster(siblingPorts);
       const start = Math.max(...bestCluster) + 1;
@@ -113,7 +113,7 @@ const WELL_KNOWN = new Set<number>([
 /**
  * Identify the "project root" for a path — the segment immediately past the
  * user's workspace containers (Development, Work, etc.). For
- * `~/Development/jarvis-miniapps/apps/x` this returns `/home/<user>/Development/jarvis-miniapps`;
+ * `~/Development/sample-monorepo/apps/x` this returns `/home/<user>/Development/sample-monorepo`;
  * for `~/Development/brokr` it returns the same.
  */
 function projectRoot(path: string): string {
