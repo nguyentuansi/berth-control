@@ -59,6 +59,13 @@
   let editing = $state(false);
   let saving = $state(false);
 
+  // Web push state — null public key means the deployment hasn't set
+  // BERTH_CONTROL_MONITOR_PUSH_CONTACT, in which case we hide the UI.
+  let pushPublicKey = $state<string | null>(null);
+  let pushReason = $state<string | null>(null);
+  let pushSubscribed = $state(false);
+  let pushBusy = $state(false);
+
   const ramUsedPct = $derived.by(() => {
     if (!live?.mem_total_mb || live?.mem_available_mb == null) return null;
     return Math.max(0, Math.min(100, ((live.mem_total_mb - live.mem_available_mb) / live.mem_total_mb) * 100));
@@ -152,6 +159,71 @@
     }
   }
 
+  async function loadPushStatus() {
+    try {
+      const r = await fetch('/api/monitor/push/vapid-key');
+      if (!r.ok) return;
+      const j = (await r.json()) as { publicKey: string | null; reason: string | null };
+      pushPublicKey = j.publicKey;
+      pushReason = j.reason;
+      // Check whether this browser already holds a subscription for this
+      // origin's service worker. Avoids re-prompting on every visit.
+      if (j.publicKey && 'serviceWorker' in navigator && 'PushManager' in window) {
+        try {
+          const reg = await navigator.serviceWorker.getRegistration('/monitor-sw.js');
+          if (reg) {
+            const sub = await reg.pushManager.getSubscription();
+            pushSubscribed = !!sub;
+          }
+        } catch {
+          /* */
+        }
+      }
+    } catch {
+      /* */
+    }
+  }
+  function urlBase64ToUint8Array(base64String: string): Uint8Array {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = atob(base64);
+    const out = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; i++) out[i] = rawData.charCodeAt(i);
+    return out;
+  }
+  async function enablePush() {
+    if (!pushPublicKey || !('serviceWorker' in navigator)) return;
+    pushBusy = true;
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') return;
+      const reg = await navigator.serviceWorker.register('/monitor-sw.js', { scope: '/' });
+      await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(pushPublicKey)
+      });
+      const r = await fetch('/api/monitor/push/subscribe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(sub.toJSON())
+      });
+      if (r.ok) pushSubscribed = true;
+    } catch (e) {
+      console.warn('[monitor] push subscribe failed', e);
+    } finally {
+      pushBusy = false;
+    }
+  }
+  async function testPush() {
+    pushBusy = true;
+    try {
+      await fetch('/api/monitor/push/test', { method: 'POST' });
+    } finally {
+      pushBusy = false;
+    }
+  }
+
   async function loadHistory() {
     try {
       const since = Date.now() - 60 * 60 * 1000;
@@ -171,6 +243,7 @@
     void loadHistory();
     void loadThresholds();
     void loadAlerts();
+    void loadPushStatus();
     es = new EventSource('/api/monitor/state');
     es.addEventListener('meta', () => {
       connected = true;
@@ -333,6 +406,13 @@
         <AlertTriangle size={14} />
         <strong>Alerts</strong>
         <span class="card-head-trail">
+          {#if pushPublicKey}
+            {#if pushSubscribed}
+              <button class="b-btn small" disabled={pushBusy} onclick={() => void testPush()}>Test push</button>
+            {:else}
+              <button class="b-btn small" disabled={pushBusy} onclick={() => void enablePush()}>Enable push</button>
+            {/if}
+          {/if}
           {#if editing}
             <button class="b-btn small" onclick={() => (editing = false)}>Cancel</button>
             <button class="b-btn small primary" disabled={saving} onclick={() => void saveThresholds()}>
@@ -344,6 +424,11 @@
         </span>
       </div>
 
+      {#if !pushPublicKey && pushReason}
+        <p class="threshold-hint">
+          Push notifications: {pushReason}
+        </p>
+      {/if}
       {#if editing}
         <div class="threshold-grid">
           {#each thresholds as t (t.key)}

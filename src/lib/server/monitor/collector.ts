@@ -5,6 +5,7 @@ import { linuxSensors } from './sensors-linux.js';
 import { macosSensors } from './sensors-macos.js';
 import type { HostSample, SensorModule } from './sensors-shared.js';
 import { ensureDefaultThresholds, evaluateAlerts, type FiredAlert } from './alerts.js';
+import { broadcastNotification, ensureWebPushReady } from './web-push.js';
 
 // In-process host-monitoring collector.
 //
@@ -94,6 +95,12 @@ export async function startHostMonitor(): Promise<void> {
   const cfg = loadConfig();
   const sensors = selectModule();
   ensureDefaultThresholds();
+  // Lazy: this prints a one-line note if BERTH_CONTROL_MONITOR_PUSH_CONTACT
+  // is unset (push stays disabled but berth still boots). When set, the
+  // VAPID keypair is generated on first call and persisted.
+  void ensureWebPushReady().then((ready) => {
+    if (ready) console.log('[monitor] web push enabled');
+  });
 
   try {
     const { availability, notes } = await sensors.init();
@@ -131,6 +138,20 @@ export async function startHostMonitor(): Promise<void> {
           '[monitor] alert evaluation failed:',
           e instanceof Error ? e.message : String(e)
         );
+      }
+
+      // Dispatch push notifications for each fired alert. Best-effort:
+      // failures are absorbed inside broadcastNotification so the tick
+      // never stalls on a slow push service. Skipped if push isn't
+      // configured (no PUSH_CONTACT in env or no subscribers yet).
+      for (const a of fired) {
+        void broadcastNotification({
+          title: `${a.label} alert`,
+          body: `${a.value.toFixed(1)}${a.unit} (threshold ${a.threshold}${a.unit})`,
+          tag: `monitor-${a.key}`
+        }).catch(() => {
+          /* never let push failures break the tick */
+        });
       }
 
       for (const fn of listeners) {

@@ -147,6 +147,41 @@ export const host_readings = sqliteTable('host_readings', {
   misc_temps: text('misc_temps')
 });
 
+/** Browser push subscriptions for host-monitor alerts. One row per device
+ *  the user has authorized via the browser's PushManager API. The endpoint
+ *  is unique (browsers won't issue duplicate endpoints for the same origin),
+ *  so we use it as the natural key. */
+export const push_subscriptions = sqliteTable('push_subscriptions', {
+  /** Stable id (used as the de-dup key in the UI). */
+  id: text('id').primaryKey(),
+  /** The push service URL the browser hands us. NEVER displayed; treated as
+   *  a credential. Goes only to web-push at send time. */
+  endpoint: text('endpoint').notNull().unique(),
+  /** Cryptographic keys derived by the browser. Required by web-push for
+   *  payload encryption. */
+  p256dh_key: text('p256dh_key').notNull(),
+  auth_key: text('auth_key').notNull(),
+  /** User-agent string for the operator's reference — lets them recognize
+   *  which device a row belongs to. Optional. */
+  user_agent: text('user_agent'),
+  created_at: integer('created_at', { mode: 'timestamp_ms' })
+    .notNull()
+    .$defaultFn(() => new Date())
+});
+
+/** Single-row table for VAPID keys. The VAPID public key is shared with
+ *  browsers as part of the subscribe flow; the private key signs each push.
+ *  Generated once at first boot and persisted so subscriptions survive
+ *  restarts. A row with id=1 is enforced via a CHECK constraint. */
+export const vapid_keys = sqliteTable('vapid_keys', {
+  id: integer('id').primaryKey(),
+  public_key: text('public_key').notNull(),
+  private_key: text('private_key').notNull(),
+  created_at: integer('created_at', { mode: 'timestamp_ms' })
+    .notNull()
+    .$defaultFn(() => new Date())
+});
+
 /** User-configurable alert thresholds. Single row per metric so the UI can
  *  CRUD them without a join. Per-metric warn level only — alerting is
  *  triggered when the latest sample exceeds the threshold, with a cooldown

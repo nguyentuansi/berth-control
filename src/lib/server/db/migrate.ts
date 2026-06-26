@@ -171,6 +171,26 @@ export function ensureSchema() {
       last_fired_at INTEGER,
       updated_at INTEGER NOT NULL
     );
+
+    -- Browser push subscriptions for host-monitor alerts. The endpoint is a
+    -- per-device URL the browser hands us; we treat it as a credential
+    -- (encrypted with p256dh + auth keys at send time).
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id TEXT PRIMARY KEY,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh_key TEXT NOT NULL,
+      auth_key TEXT NOT NULL,
+      user_agent TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+    -- VAPID keys for signing push payloads. Single row enforced via CHECK.
+    CREATE TABLE IF NOT EXISTS vapid_keys (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      public_key TEXT NOT NULL,
+      private_key TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
 
   // Additive ALTERs for users — these may already exist on upgraded DBs, so
