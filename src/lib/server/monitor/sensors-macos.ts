@@ -166,26 +166,39 @@ function sampleMemory(s: HostSample): void {
     const pagesFree = fields['Pages free'] ?? 0;
     const pagesInactive = fields['Pages inactive'] ?? 0;
     const pagesSpeculative = fields['Pages speculative'] ?? 0;
-    const pagesCached = fields['Pages purgeable'] ?? 0; // approx
+    const pagesPurgeable = fields['Pages purgeable'] ?? 0;
     const pagesActive = fields['Pages active'] ?? 0;
     const pagesWired = fields['Pages wired down'] ?? 0;
     const pagesCompressed = fields['Pages occupied by compressor'] ?? 0;
 
     const bytesToMb = (v: number) => (v * pageSize) / 1_048_576;
-    // "Available" on macOS — close analog to Linux MemAvailable — is the
-    // sum of free+inactive+speculative+purgeable.
-    const avail = bytesToMb(pagesFree + pagesInactive + pagesSpeculative + pagesCached);
+
+    // Memory accounting matches Activity Monitor's "Memory Used":
+    //   used = active + wired + compressor
+    //   available = total - used
+    //
+    // The previous formula (free + inactive + speculative + purgeable) was
+    // technically a closer analog to Linux's MemAvailable — but `inactive`
+    // swings wildly as the kernel reshuffles file-backed pages between
+    // active and inactive. In a one-minute window we saw `mem_available`
+    // jump from 17 GB to 41 GB without anything actually freeing memory.
+    // The Activity Monitor formula is stable because it counts only what
+    // processes are actually using right now, not what the kernel decided
+    // is reclaimable this tick.
+    const memUsedMb = bytesToMb(pagesActive + pagesWired + pagesCompressed);
 
     if (totalBytes > 0) {
       s.mem_total_mb = totalBytes / 1_048_576;
     } else {
-      // Fallback: total = active + wired + compressed + avail.
-      s.mem_total_mb = bytesToMb(pagesActive + pagesWired + pagesCompressed) + avail;
+      // Fallback: derive total from the page sums when sysctl failed.
+      s.mem_total_mb =
+        memUsedMb + bytesToMb(pagesFree + pagesInactive + pagesSpeculative + pagesPurgeable);
     }
-    s.mem_available_mb = avail;
-    s.mem_cached_mb = bytesToMb(pagesCached);
-    // There's no direct "buffers" analog on macOS — leave null rather than
-    // guess.
+    s.mem_available_mb = s.mem_total_mb - memUsedMb;
+    // File cache (Activity Monitor's "Cached Files") — inactive + purgeable
+    // is what the kernel can reclaim under pressure. Reported so the UI can
+    // surface it separately from "used" if it wants.
+    s.mem_cached_mb = bytesToMb(pagesInactive + pagesPurgeable);
   } catch {
     /* */
   }

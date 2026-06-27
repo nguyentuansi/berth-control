@@ -213,8 +213,15 @@
     return Math.max(0, Math.min(100, ((live.mem_total_mb - live.mem_available_mb) / live.mem_total_mb) * 100));
   });
   const diskUsedPct = $derived.by(() => {
-    if (!live?.disk_total_gb || live?.disk_used_gb == null) return null;
-    return Math.max(0, Math.min(100, (live.disk_used_gb / live.disk_total_gb) * 100));
+    if (live?.disk_used_gb == null || live?.disk_avail_gb == null) return null;
+    // On APFS, `disk_total_gb` is the whole container — multiple volumes
+    // share that pool, so `used / total` gives a misleading 1% when the
+    // volume itself is 5% full. Use `used / (used + avail)` to match what
+    // Finder, Activity Monitor, and `df`'s use% column report — the actual
+    // usable footprint of this volume.
+    const denom = live.disk_used_gb + live.disk_avail_gb;
+    if (denom <= 0) return null;
+    return Math.max(0, Math.min(100, (live.disk_used_gb / denom) * 100));
   });
   const swapUsedPct = $derived.by(() => {
     if (!live?.swap_total_mb || live?.swap_free_mb == null || live.swap_total_mb === 0) return null;
@@ -672,7 +679,11 @@
         {diskUsedPct == null ? '—' : `${diskUsedPct.toFixed(0)}%`}
       </div>
       <div class="card-sub">
-        {fmtGB(live?.disk_used_gb)} of {fmtGB(live?.disk_total_gb)}
+        {fmtGB(live?.disk_used_gb)} of {fmtGB(
+          live?.disk_used_gb != null && live?.disk_avail_gb != null
+            ? live.disk_used_gb + live.disk_avail_gb
+            : null
+        )}
         · {fmtGB(live?.disk_avail_gb)} free
       </div>
     {/snippet}

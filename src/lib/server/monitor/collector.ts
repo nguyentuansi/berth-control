@@ -16,10 +16,17 @@ import { broadcastNotification, ensureWebPushReady } from './web-push.js';
 // to `fastIntervalSecs` so the time-series shows the pressure ramp clearly.
 //
 // Configuration via env (all with safe defaults — no .env required to boot):
-//   BERTH_CONTROL_MONITOR_INTERVAL_SECS       (default 60) normal cadence
-//   BERTH_CONTROL_MONITOR_FAST_INTERVAL_SECS  (default 10) under-pressure cadence
+//   BERTH_CONTROL_MONITOR_INTERVAL_SECS       (default 10) normal cadence
+//   BERTH_CONTROL_MONITOR_FAST_INTERVAL_SECS  (default 5)  under-pressure cadence
 //   BERTH_CONTROL_MONITOR_RAM_PRESSURE_PCT    (default 80) trigger for fast mode
 //   BERTH_CONTROL_MONITOR_RETENTION_DAYS      (default 90) drop rows older than this
+//
+// Cadence note: 10s is the default because it's the rate users *feel* live.
+// 60s used to be the default and produced the wrong subjective experience —
+// memory and CPU appeared frozen except when a debug environment happened to
+// have 5+ zombie collectors writing rotating samples. At 10s × 6 samples/min
+// × 90 days × ~150 bytes/row ≈ 117 MB DB footprint — still trivial. If you
+// want to trade liveness for DB size, raise INTERVAL_SECS via env.
 //
 // NEVER hardcode any user-specific value (hostname, tailnet domain, IPs,
 // interfaces). Anything machine-specific is discovered at runtime by the
@@ -38,8 +45,8 @@ function loadConfig(): Config {
     return Number.isFinite(v) && v > 0 ? v : d;
   };
   return {
-    intervalSecs: num('BERTH_CONTROL_MONITOR_INTERVAL_SECS', 60),
-    fastIntervalSecs: num('BERTH_CONTROL_MONITOR_FAST_INTERVAL_SECS', 10),
+    intervalSecs: num('BERTH_CONTROL_MONITOR_INTERVAL_SECS', 10),
+    fastIntervalSecs: num('BERTH_CONTROL_MONITOR_FAST_INTERVAL_SECS', 5),
     ramPressurePct: num('BERTH_CONTROL_MONITOR_RAM_PRESSURE_PCT', 80),
     retentionDays: num('BERTH_CONTROL_MONITOR_RETENTION_DAYS', 90)
   };
