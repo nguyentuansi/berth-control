@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { Cpu, MemoryStick, HardDrive, Thermometer, Activity, Wifi, AlertTriangle, Server, ListChecks } from 'lucide-svelte';
-  import Card from '@berth/ui/Card.svelte';
-  import Chart from '@berth/ui/Chart.svelte';
+  import { Card } from '@berth/ui/card';
   import MultiLineChart from '@berth/ui/MultiLineChart.svelte';
+  // Chart primitive was removed from @berth/ui in the Layer-1 namespace
+  // refactor; sparklines use single-series MultiLineChart with the
+  // legend suppressed. Layer 4 (layerchart-backed Chart) will replace
+  // this if we want richer sparklines later.
 
   // Live host monitoring page.
   //
@@ -218,29 +221,53 @@
     return Math.max(0, Math.min(100, ((live.swap_total_mb - live.swap_free_mb) / live.swap_total_mb) * 100));
   });
 
+  // Sparkline data. `{ts, value}` shape matches MultiLineChart's series
+  // contract directly — wrap each derived array in a one-element series
+  // at the call site (label is unused when showLegend={false}).
   const cpuHistory = $derived.by(() =>
     history
       .filter((s) => s.cpu_util_total != null)
-      .map((s) => ({ label: hhmm(s.ts), value: s.cpu_util_total! }))
+      .map((s) => ({ ts: s.ts, value: s.cpu_util_total! }))
+  );
+  const cpuTempHistory = $derived.by(() =>
+    history
+      .filter((s) => s.cpu_pkg_temp != null)
+      .map((s) => ({ ts: s.ts, value: s.cpu_pkg_temp! }))
+  );
+  const gpuTempHistory = $derived.by(() =>
+    history
+      .filter((s) => s.gpu_temp != null)
+      .map((s) => ({ ts: s.ts, value: s.gpu_temp! }))
   );
   const ramHistory = $derived.by(() =>
     history
       .filter((s) => s.mem_total_mb != null && s.mem_available_mb != null)
       .map((s) => ({
-        label: hhmm(s.ts),
+        ts: s.ts,
         value: ((s.mem_total_mb! - s.mem_available_mb!) / s.mem_total_mb!) * 100
       }))
   );
-  const netHistory = $derived.by(() => {
-    // Sum rx+tx across all interfaces per sample to get total throughput.
-    return history
+  const netHistory = $derived.by(() =>
+    history
       .filter((s) => s.net_per_iface != null)
       .map((s) => {
         let total = 0;
         for (const v of Object.values(s.net_per_iface!)) total += v.rx_bps + v.tx_bps;
-        return { label: hhmm(s.ts), value: total / 1024 }; // KB/s
-      });
-  });
+        return { ts: s.ts, value: total / 1024 }; // KB/s
+      })
+  );
+
+  // Map the project's old Chart `variant` prop to a CSS color the
+  // MultiLineChart `color` prop accepts. Keeps the at-a-glance red/orange
+  // signal for memory + temp warn states.
+  function sparkColor(variant: 'primary' | 'warning' | 'danger'): string {
+    if (variant === 'danger') return 'var(--ui-destructive)';
+    if (variant === 'warning') return 'var(--ui-warning, oklch(70% 0.15 65))';
+    return 'var(--ui-primary)';
+  }
+  function sparkSeries(label: string, data: { ts: number; value: number }[], color: string) {
+    return [{ label, color, data }];
+  }
 
   function hhmm(ms: number): string {
     const d = new Date(ms);
@@ -501,9 +528,9 @@
 {/if}
 
 <div class="cards">
-  <!-- System info -->
+  <!-- System info — own row, full width -->
   {#if sysInfo}
-    <Card class="card card-wide">
+    <Card class="card card-full">
       {#snippet children()}
         <div class="card-head">
           <Server size={14} />
@@ -563,6 +590,9 @@
         </div>
         <div class="card-big">{live.cpu_pkg_temp.toFixed(1)}°C</div>
         <div class="card-sub">package</div>
+        {#if cpuTempHistory.length > 1}
+          <div class="card-chart"><MultiLineChart series={sparkSeries('CPU temp', cpuTempHistory, sparkColor(tempBadge('cpu_temp', live.cpu_pkg_temp)?.tone === 'warn' ? 'danger' : 'primary'))} height={80} showLegend={false} /></div>
+        {/if}
       {/snippet}
     </Card>
   {/if}
@@ -581,6 +611,9 @@
         </div>
         <div class="card-big">{live.gpu_temp.toFixed(1)}°C</div>
         <div class="card-sub">GPU sensor</div>
+        {#if gpuTempHistory.length > 1}
+          <div class="card-chart"><MultiLineChart series={sparkSeries('GPU temp', gpuTempHistory, sparkColor(tempBadge('gpu_temp', live.gpu_temp)?.tone === 'warn' ? 'danger' : 'primary'))} height={80} showLegend={false} /></div>
+        {/if}
       {/snippet}
     </Card>
   {/if}
@@ -602,7 +635,7 @@
         {/if}
       </div>
       {#if cpuHistory.length > 1}
-        <div class="card-chart"><Chart data={cpuHistory} type="line" variant="primary" height={80} showAxis={false} /></div>
+        <div class="card-chart"><MultiLineChart series={sparkSeries('CPU %', cpuHistory, sparkColor('primary'))} height={80} showLegend={false} /></div>
       {/if}
     {/snippet}
   </Card>
@@ -623,7 +656,7 @@
         {#if swapUsedPct != null}· swap {swapUsedPct.toFixed(0)}%{/if}
       </div>
       {#if ramHistory.length > 1}
-        <div class="card-chart"><Chart data={ramHistory} type="line" variant={ramUsedPct != null && ramUsedPct >= 90 ? 'danger' : ramUsedPct != null && ramUsedPct >= 80 ? 'warning' : 'primary'} height={80} showAxis={false} /></div>
+        <div class="card-chart"><MultiLineChart series={sparkSeries('Memory %', ramHistory, sparkColor(ramUsedPct != null && ramUsedPct >= 90 ? 'danger' : ramUsedPct != null && ramUsedPct >= 80 ? 'warning' : 'primary'))} height={80} showLegend={false} /></div>
       {/if}
     {/snippet}
   </Card>
@@ -667,9 +700,9 @@
     </Card>
   {/if}
 
-  <!-- Network throughput summary -->
+  <!-- Network throughput summary — small card, shares row with CPU/Memory/Disk/GPU -->
   {#if live?.net_per_iface && Object.keys(live.net_per_iface).length > 0}
-    <Card class="card card-wide">
+    <Card class="card">
       {#snippet children()}
         <div class="card-head">
           <Wifi size={14} />
@@ -685,7 +718,7 @@
           {/each}
         </div>
         {#if netHistory.length > 1}
-          <div class="card-chart"><Chart data={netHistory} type="area" variant="primary" height={80} showAxis={false} /></div>
+          <div class="card-chart"><MultiLineChart series={sparkSeries('Network KB/s', netHistory, sparkColor('primary'))} height={80} showLegend={false} /></div>
         {/if}
       {/snippet}
     </Card>
@@ -880,25 +913,6 @@
     {/snippet}
   </Card>
 
-  <!-- Misc temps (hwmon / powermetrics) -->
-  {#if live?.misc_temps && Object.keys(live.misc_temps).length > 0}
-    <Card class="card card-wide">
-      {#snippet children()}
-        <div class="card-head">
-          <Thermometer size={14} />
-          <strong>Other temperatures</strong>
-        </div>
-        <div class="temps-grid">
-          {#each Object.entries(live.misc_temps) as [name, temp]}
-            <div class="temp">
-              <span class="temp-name b-mono">{name}</span>
-              <span class="temp-value">{temp.toFixed(1)}°C</span>
-            </div>
-          {/each}
-        </div>
-      {/snippet}
-    </Card>
-  {/if}
 </div>
 
 <style>
@@ -925,17 +939,42 @@
     border-left: 3px solid var(--b-bad);
   }
 
+  /* 21-column grid = LCM(7 small + 3 wide). At ≥1200px each row holds:
+       row 1: one system card (span 21)
+       row 2: 7 small big-number cards (span 3 each → 21)
+       row 3: 3 wide chart cards (span 7 each → 21)
+       row 4: 3 wide list cards (span 7 each → 21)
+     Below 1200px we fall back to auto-fill — narrow screens just wrap. */
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    grid-template-columns: repeat(21, 1fr);
     gap: 14px;
   }
 
   :global(.card) {
     padding: 14px 16px;
+    grid-column: span 3;
   }
   :global(.card.card-wide) {
-    grid-column: span 2;
+    grid-column: span 7;
+  }
+  :global(.card.card-full) {
+    grid-column: span 21;
+  }
+
+  @media (max-width: 1199px) {
+    .cards {
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    }
+    :global(.card) {
+      grid-column: auto;
+    }
+    :global(.card.card-wide) {
+      grid-column: span 2;
+    }
+    :global(.card.card-full) {
+      grid-column: 1 / -1;
+    }
   }
 
   .card-head {
@@ -965,18 +1004,26 @@
     margin-right: -6px;
   }
 
+  /* Network now lives in a small (span-3) card. Stack interface rows
+     vertically — each row keeps the original 3-column "name / ↓ rx / ↑ tx"
+     layout but the list itself is one-up so it fits in the narrow card. */
   .iface-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
     margin-top: 6px;
   }
   .iface {
     display: grid;
     grid-template-columns: 1fr auto auto;
-    gap: 8px;
-    font-size: 12px;
+    gap: 6px;
+    font-size: 11.5px;
     align-items: baseline;
+  }
+  .iface-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .iface-name { color: var(--b-text); font-weight: 500; }
   .iface-rx { color: var(--b-info); }

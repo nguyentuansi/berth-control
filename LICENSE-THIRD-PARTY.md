@@ -3,6 +3,14 @@
 berth-control bundles and links against third-party code under permissive
 licenses. Original copyright notices are reproduced below as required.
 
+## @berth/ui DataTable.svelte
+
+`src/lib/components/DataTable.svelte` is a vendored copy of the pre-Layer-1
+DataTable.svelte from `@berth/ui` (file: dep, MIT). We hold a self-contained
+copy in-tree while @berth/ui migrates to TanStack-backed primitives, so the
+dashboard's app list keeps working through the transition. License: MIT
+(same as @berth/ui's parent berth repository).
+
 ## macos-temperature-sensor
 
 The Apple Silicon temperature reader in `src/lib/server/monitor/native/`

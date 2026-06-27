@@ -1,13 +1,49 @@
-/* @import statements MUST come before @tailwind directives (PostCSS rule). */
 @import '@fontsource/inter/400.css';
 @import '@fontsource/inter/500.css';
 @import '@fontsource/inter/600.css';
 @import '@fontsource/jetbrains-mono/400.css';
 @import '@fontsource/jetbrains-mono/500.css';
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* One line — pulls in Tailwind 4, the --ui-* token system, and scans @berth/ui's
+ * own .svelte sources so every component's utility classes resolve. The legacy
+ * --b-* tokens below stay untouched; @berth/ui's --ui-* prefix can't collide. */
+@import '@berth/ui/styles.css';
+
+/* @berth/ui's Layer-1 refactor follows shadcn-svelte conventions which depend on
+ * tailwindcss-animate / tw-animate-css for animate-in / animate-out / fade-in-0
+ * / slide-in-from-* utilities. @berth/ui's styles.css doesn't @import them, so
+ * pull tw-animate-css in here. Accordion-specific keyframes still need local
+ * definitions since tw-animate-css doesn't cover them. */
+@import 'tw-animate-css';
+
+@theme {
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-caret-blink: caret-blink 1.25s ease-out infinite;
+}
+@keyframes accordion-down {
+  from { height: 0; }
+  to { height: var(--bits-accordion-content-height); }
+}
+@keyframes accordion-up {
+  from { height: var(--bits-accordion-content-height); }
+  to { height: 0; }
+}
+@keyframes caret-blink {
+  0%, 70%, 100% { opacity: 1; }
+  20%, 50%      { opacity: 0; }
+}
+
+/* `no-scrollbar` — @berth/ui's command palette / dropdown menu / context menu
+ * scroll bodies @apply this. Standard shadcn pattern; not a Tailwind 4
+ * built-in. Define here so the @apply's resolve. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
 
 /* Berth design tokens — light + dark, warm orange accent. Standalone (no
  * workspace dep). Inspired by the disciplined neutral palettes of editorial
