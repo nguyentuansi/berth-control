@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { emptySample, type HostSample, type SensorModule } from './sensors-shared.js';
+import { available as nativeTempAvailable, readTemperature } from './native-temp.js';
 
 // macOS host monitoring. Same surface as sensors-linux but pulls from
 // BSD-shaped tools: top / vm_stat / sysctl / netstat / iostat / df, with
@@ -29,10 +30,16 @@ async function init(): Promise<{ availability: Record<string, boolean>; notes: s
   availability.df = canSpawn('df');
   availability.system_profiler = canSpawn('system_profiler');
 
-  // powermetrics is the only path to CPU temps + Apple Silicon GPU metrics,
-  // but it requires sudo. Try a one-shot probe — if it works without a
-  // password prompt, we can use it. If not, set to false and silently skip
-  // thermal/GPU until the user wires sudoers.
+  // Primary path for CPU/GPU temperatures on Apple Silicon: the in-tree
+  // berth_temp N-API addon (src/lib/server/monitor/native/), which reads
+  // IOHIDEventSystem thermal sensors without sudo. If the .node file
+  // didn't build (Intel Mac, missing CLT, postinstall skipped) we fall
+  // back to powermetrics under sudo for CPU temp + GPU power.
+  availability.berth_temp_native = nativeTempAvailable;
+
+  // powermetrics is still useful for GPU power / activity even when the
+  // native module covers temperatures. Probe it so we can use it when
+  // available, but its absence is no longer fatal for the temp cards.
   try {
     execSync('sudo -n powermetrics --samplers smc -i 100 -n 1 --hide-cpu-duty-cycle 2>/dev/null', {
       stdio: 'ignore',
@@ -43,10 +50,13 @@ async function init(): Promise<{ availability: Record<string, boolean>; notes: s
   } catch {
     powermetricsAvailable = false;
     availability.powermetrics = false;
-    notes.push(
-      "powermetrics not usable without sudo — CPU temps + Apple-Silicon GPU will be null. " +
-        "To enable: add a NOPASSWD sudoers entry for `/usr/bin/powermetrics`."
-    );
+    if (!nativeTempAvailable) {
+      notes.push(
+        'Neither the in-tree native temperature module nor sudoless powermetrics is available — ' +
+          'CPU/GPU temps will be null. The native module ships with berth-control; ' +
+          'rebuild with `bun run build:native` (requires Xcode Command Line Tools).'
+      );
+    }
   }
 
   // Cache logical CPU count so per-core sizing is consistent across ticks.
@@ -76,9 +86,34 @@ async function sample(): Promise<HostSample> {
   sampleMemory(s);
   sampleDisk(s);
   sampleNet(s);
+
+  // Read CPU/GPU temperatures from the in-tree native module first — it's
+  // sub-millisecond and needs no sudo. powermetrics still runs after for
+  // anything the native module doesn't cover (GPU power/utilization, the
+  // misc thermal channels). Either path can populate any field; later
+  // writes override earlier ones, so the order here is "cheap first".
+  if (nativeTempAvailable) sampleNativeTemps(s);
   if (powermetricsAvailable) samplePowermetrics(s);
 
   return s;
+}
+
+function sampleNativeTemps(s: HostSample): void {
+  const r = readTemperature();
+  if (!r) return;
+  if (r.cpu != null) s.cpu_pkg_temp = r.cpu;
+  if (r.gpu != null) s.gpu_temp = r.gpu;
+  // Expose per-die CPU temps if we have them — `cpu_core_temps` is an
+  // array on the shared sample shape and was previously only populated
+  // on Linux from /sys/class/hwmon coretemp_input files.
+  if (r.cpuDieTemps.length > 0) s.cpu_core_temps = r.cpuDieTemps;
+  // Stash the SoC + per-die GPU temps on the misc_temps blob so the
+  // dashboard's "Other temperatures" card can surface them.
+  s.misc_temps = s.misc_temps ?? {};
+  if (r.soc != null) s.misc_temps['SoC avg'] = r.soc;
+  r.gpuDieTemps.forEach((t, i) => {
+    s.misc_temps![`GPU die ${i}`] = t;
+  });
 }
 
 function sampleCpu(s: HostSample): void {

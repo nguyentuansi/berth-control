@@ -32,7 +32,9 @@
     "db:studio": "drizzle-kit studio",
     "demo:seed": "BERTH_CONTROL_DB=./demo.db bun run scripts/seed-demo.ts",
     "demo:dev": "BERTH_CONTROL_DEMO=1 BERTH_CONTROL_DB=./demo.db bunx vite dev --port 5203 --host 127.0.0.1",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "build:native": "cd native && node-gyp rebuild",
+    "postinstall": "node scripts/build-native.mjs"
   },
   "dependencies": {
     "@berth/ui": "file:../berth/packages/ui",
@@ -52,6 +54,7 @@
   },
   "devDependencies": {
     "@sveltejs/adapter-node": "^5.2.9",
+    "node-gyp": "^10.2.0",
     "@sveltejs/kit": "^2.15.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4.2.2",
