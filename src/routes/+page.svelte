@@ -305,7 +305,7 @@
   }
 
   // Collapsed project groups: { [groupName]: true }. Persisted across reloads.
-  // Shared across Active/Inactive sections — if you collapse "sample-monorepo",
+  // Shared across Active/Inactive sections — if you collapse a project group,
   // it collapses in both sections (it's the same conceptual project).
   let collapsed: Record<string, boolean> = $state({});
 
@@ -2558,10 +2558,10 @@
     gap: 6px;
   }
   .title { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
-  /* Names wrap rather than ellipsing. Names like `sample-monorepo` were
-     getting clipped to `jarvis-minia...` which read as a status indicator
-     next to the real status dot. Wrapping costs a few pixels of card
-     height for long names but never produces visually-ambiguous dots. */
+  /* Names wrap rather than ellipsing. A 15-character app name was getting
+     clipped to "first-12-chars..." which read as a status indicator next
+     to the real status dot. Wrapping costs a few pixels of card height
+     for long names but never produces visually-ambiguous dots. */
   .name {
     font-weight: 600;
     color: var(--b-text);
