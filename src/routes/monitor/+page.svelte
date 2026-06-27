@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Cpu, MemoryStick, HardDrive, Thermometer, Activity, Wifi, AlertTriangle } from 'lucide-svelte';
+  import { Cpu, MemoryStick, HardDrive, Thermometer, Activity, Wifi, AlertTriangle, Server, ListChecks } from 'lucide-svelte';
   import Card from '@berth/ui/Card.svelte';
   import Chart from '@berth/ui/Chart.svelte';
 
@@ -47,6 +47,42 @@
     last_fired_at: number | null;
   };
   type Alert = { id: number; ts: number; level: string; msg: string };
+  type SystemInfo = {
+    hostname: string;
+    os: string;
+    os_pretty: string | null;
+    arch: string;
+    kernel: string;
+    total_ram_mb: number;
+    cpu_count: number;
+    process_uptime_secs: number;
+    system_uptime_secs: number;
+    primary_ipv4: string | null;
+  };
+  type ProcRow = {
+    pid: number;
+    ppid: number;
+    user: string;
+    cpu_pct: number;
+    mem_mb: number;
+    comm: string;
+  };
+
+  // Time-range presets, matching SysWatch's layout. Values are minutes for
+  // brevity; the load fn converts to ms when calling /history. Default 60.
+  type RangeKey = '5M' | '10M' | '15M' | '30M' | '1H' | '6H' | '24H' | '7D' | '30D';
+  const RANGE_MINUTES: Record<RangeKey, number> = {
+    '5M': 5,
+    '10M': 10,
+    '15M': 15,
+    '30M': 30,
+    '1H': 60,
+    '6H': 360,
+    '24H': 1440,
+    '7D': 10_080,
+    '30D': 43_200
+  };
+  let activeRange = $state<RangeKey>('1H');
 
   let live: Sample | null = $state(null);
   let history: Sample[] = $state([]);
@@ -65,6 +101,30 @@
   let pushReason = $state<string | null>(null);
   let pushSubscribed = $state(false);
   let pushBusy = $state(false);
+
+  let sysInfo = $state<SystemInfo | null>(null);
+  let processes = $state<ProcRow[]>([]);
+
+  // Status badge for a temperature value vs its configured threshold.
+  // Returns "Normal" if below warn, "Warning" otherwise. Null if either
+  // value is missing — we don't fabricate a status from nothing.
+  function tempBadge(key: string, value: number | null | undefined): { label: string; tone: 'ok' | 'warn' } | null {
+    if (value == null) return null;
+    const t = thresholds.find((x) => x.key === key);
+    const warn = t?.warn_value;
+    if (warn == null) return { label: 'Normal', tone: 'ok' };
+    return value >= warn ? { label: 'Warning', tone: 'warn' } : { label: 'Normal', tone: 'ok' };
+  }
+
+  function fmtUptime(s: number | null | undefined): string {
+    if (s == null) return '—';
+    const days = Math.floor(s / 86400);
+    const hours = Math.floor((s % 86400) / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    if (days > 0) return `${days}d ${hours}h ${mins}m`;
+    if (hours > 0) return `${hours}h ${mins}m`;
+    return `${mins}m`;
+  }
 
   const ramUsedPct = $derived.by(() => {
     if (!live?.mem_total_mb || live?.mem_available_mb == null) return null;
@@ -226,17 +286,44 @@
 
   async function loadHistory() {
     try {
-      const since = Date.now() - 60 * 60 * 1000;
-      const r = await fetch(`/api/monitor/history?from=${since}&max=120`);
+      const minutes = RANGE_MINUTES[activeRange];
+      const since = Date.now() - minutes * 60 * 1000;
+      // Cap points by range so the @berth/ui Chart stays responsive: 120
+      // points for short ranges (5–60M = ~2–30s/point), 240 for medium
+      // (6–24h), 480 for long (7–30D ≈ 90s–1.5min/point).
+      const max = minutes <= 60 ? 120 : minutes <= 1440 ? 240 : 480;
+      const r = await fetch(`/api/monitor/history?from=${since}&max=${max}`);
       if (!r.ok) {
         loadError = `history load failed (${r.status})`;
         return;
       }
       const j = (await r.json()) as { samples: Sample[] };
       history = j.samples ?? [];
+      loadError = null;
     } catch (e) {
       loadError = e instanceof Error ? e.message : String(e);
     }
+  }
+  async function loadSysInfo() {
+    try {
+      const r = await fetch('/api/monitor/system');
+      if (r.ok) sysInfo = await r.json();
+    } catch {
+      /* */
+    }
+  }
+  async function loadProcesses() {
+    try {
+      const r = await fetch('/api/monitor/processes?limit=20');
+      if (r.ok) processes = (await r.json()).processes ?? [];
+    } catch {
+      /* */
+    }
+  }
+  function setRange(r: RangeKey) {
+    if (r === activeRange) return;
+    activeRange = r;
+    void loadHistory();
   }
 
   onMount(() => {
@@ -244,6 +331,12 @@
     void loadThresholds();
     void loadAlerts();
     void loadPushStatus();
+    void loadSysInfo();
+    void loadProcesses();
+    // Refresh process list every 5s — they churn fast and pushing via SSE
+    // would more than double the per-tick payload for negligible UX gain.
+    const procTimer = setInterval(() => void loadProcesses(), 5000);
+
     es = new EventSource('/api/monitor/state');
     es.addEventListener('meta', () => {
       connected = true;
@@ -258,7 +351,9 @@
         live = payload.sample;
         const last = history[history.length - 1];
         if (!last || payload.ts > last.ts) history.push({ ...payload.sample, ts: payload.ts });
-        const cutoff = Date.now() - 60 * 60 * 1000;
+        // Cutoff matches the user's active range — so a 5M view drops
+        // anything older, and a 30D view keeps a month's tail.
+        const cutoff = Date.now() - RANGE_MINUTES[activeRange] * 60 * 1000;
         while (history.length > 0 && history[0].ts < cutoff) history.shift();
         // If any alerts fired, refresh the log so the user sees them
         // without a manual reload.
@@ -270,6 +365,12 @@
     es.addEventListener('error', () => {
       connected = false;
     });
+
+    // Cleanup ONLY runs at component destroy. Putting the EventSource
+    // setup before the return is mandatory — Svelte 5 treats onMount's
+    // return as cleanup, so an early `return` would skip the SSE wiring
+    // entirely (the regression that caused live cards to stay blank).
+    return () => clearInterval(procTimer);
   });
   onDestroy(() => {
     es?.close();
@@ -284,6 +385,19 @@
       {#if live}few seconds — connection {connected ? 'live' : 'reconnecting'}{:else}few seconds{/if}.
     </p>
   </div>
+  <div class="range-bar" role="tablist" aria-label="History range">
+    {#each Object.keys(RANGE_MINUTES) as key (key)}
+      <button
+        class="b-btn small"
+        class:active={activeRange === key}
+        onclick={() => setRange(key as RangeKey)}
+        role="tab"
+        aria-selected={activeRange === key}
+      >
+        {key}
+      </button>
+    {/each}
+  </div>
 </section>
 
 {#if loadError}
@@ -293,6 +407,90 @@
 {/if}
 
 <div class="cards">
+  <!-- System info -->
+  {#if sysInfo}
+    <Card class="card card-wide">
+      {#snippet children()}
+        <div class="card-head">
+          <Server size={14} />
+          <strong>System</strong>
+        </div>
+        <div class="sys-grid">
+          <div class="sys-row">
+            <span class="sys-label">Hostname</span>
+            <span class="sys-value b-mono">{sysInfo.hostname}</span>
+          </div>
+          {#if sysInfo.primary_ipv4}
+            <div class="sys-row">
+              <span class="sys-label">IPv4</span>
+              <span class="sys-value b-mono">{sysInfo.primary_ipv4}</span>
+            </div>
+          {/if}
+          <div class="sys-row">
+            <span class="sys-label">OS</span>
+            <span class="sys-value">{sysInfo.os_pretty ?? sysInfo.os}</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-label">Kernel</span>
+            <span class="sys-value b-mono">{sysInfo.kernel}</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-label">Arch · CPUs</span>
+            <span class="sys-value b-mono">{sysInfo.arch} · {sysInfo.cpu_count}</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-label">RAM</span>
+            <span class="sys-value">{(sysInfo.total_ram_mb / 1024).toFixed(1)} GB</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-label">System up</span>
+            <span class="sys-value">{fmtUptime(sysInfo.system_uptime_secs)}</span>
+          </div>
+          <div class="sys-row">
+            <span class="sys-label">berth up</span>
+            <span class="sys-value">{fmtUptime(sysInfo.process_uptime_secs)}</span>
+          </div>
+        </div>
+      {/snippet}
+    </Card>
+  {/if}
+
+  <!-- CPU temp (only if a value was collected) -->
+  {#if live?.cpu_pkg_temp != null}
+    <Card class="card">
+      {#snippet children()}
+        <div class="card-head">
+          <Thermometer size={14} />
+          <strong>CPU temp</strong>
+          {#if tempBadge('cpu_temp', live.cpu_pkg_temp)}
+            {@const b = tempBadge('cpu_temp', live.cpu_pkg_temp)!}
+            <span class="status-badge" class:warn={b.tone === 'warn'} class:ok={b.tone === 'ok'}>{b.label}</span>
+          {/if}
+        </div>
+        <div class="card-big">{live.cpu_pkg_temp.toFixed(1)}°C</div>
+        <div class="card-sub">package</div>
+      {/snippet}
+    </Card>
+  {/if}
+
+  <!-- GPU temp (only if a value was collected) -->
+  {#if live?.gpu_temp != null}
+    <Card class="card">
+      {#snippet children()}
+        <div class="card-head">
+          <Thermometer size={14} />
+          <strong>GPU temp</strong>
+          {#if tempBadge('gpu_temp', live.gpu_temp)}
+            {@const b = tempBadge('gpu_temp', live.gpu_temp)!}
+            <span class="status-badge" class:warn={b.tone === 'warn'} class:ok={b.tone === 'ok'}>{b.label}</span>
+          {/if}
+        </div>
+        <div class="card-big">{live.gpu_temp.toFixed(1)}°C</div>
+        <div class="card-sub">GPU sensor</div>
+      {/snippet}
+    </Card>
+  {/if}
+
   <!-- CPU -->
   <Card class="card">
     {#snippet children()}
@@ -395,6 +593,37 @@
         {#if netHistory.length > 1}
           <div class="card-chart"><Chart data={netHistory} type="area" variant="primary" height={80} showAxis={false} /></div>
         {/if}
+      {/snippet}
+    </Card>
+  {/if}
+
+  <!-- Top processes -->
+  {#if processes.length > 0}
+    <Card class="card card-wide">
+      {#snippet children()}
+        <div class="card-head">
+          <ListChecks size={14} />
+          <strong>Processes</strong>
+          <span class="b-mute2 small">({processes.length} by CPU)</span>
+        </div>
+        <div class="proc-table">
+          <div class="proc-row proc-head">
+            <span>Process</span>
+            <span>PID</span>
+            <span>User</span>
+            <span class="proc-right">CPU%</span>
+            <span class="proc-right">Memory</span>
+          </div>
+          {#each processes as p (p.pid)}
+            <div class="proc-row">
+              <span class="b-mono proc-comm" title={p.comm}>{p.comm}</span>
+              <span class="b-mono b-mute2">{p.pid}</span>
+              <span class="b-mute2">{p.user}</span>
+              <span class="proc-right">{p.cpu_pct.toFixed(1)}</span>
+              <span class="proc-right">{p.mem_mb < 1 ? '< 1 MB' : `${p.mem_mb.toFixed(0)} MB`}</span>
+            </div>
+          {/each}
+        </div>
       {/snippet}
     </Card>
   {/if}
@@ -659,4 +888,97 @@
   }
   .alert-ts { color: var(--b-text-3); }
   .alert-msg { color: var(--b-text); }
+
+  .head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .range-bar {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: flex-start;
+  }
+  .range-bar .b-btn.small {
+    padding: 4px 10px;
+    font-size: 11.5px;
+    min-width: 38px;
+    background: var(--b-surface);
+  }
+  .range-bar .b-btn.small.active {
+    background: var(--b-accent);
+    color: var(--b-bg);
+    border-color: var(--b-accent);
+  }
+
+  .sys-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .sys-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12.5px;
+    gap: 12px;
+  }
+  .sys-label { color: var(--b-text-3); }
+  .sys-value { color: var(--b-text); }
+
+  .status-badge {
+    margin-left: auto;
+    font-size: 10.5px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border: 1px solid transparent;
+  }
+  .status-badge.ok {
+    color: var(--b-ok);
+    background: color-mix(in oklab, var(--b-ok) 14%, transparent);
+    border-color: color-mix(in oklab, var(--b-ok) 28%, transparent);
+  }
+  .status-badge.warn {
+    color: var(--b-bad);
+    background: color-mix(in oklab, var(--b-bad) 14%, transparent);
+    border-color: color-mix(in oklab, var(--b-bad) 30%, transparent);
+  }
+
+  .proc-table {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    max-height: 360px;
+    overflow-y: auto;
+  }
+  .proc-row {
+    display: grid;
+    grid-template-columns: 2fr 80px 100px 60px 80px;
+    gap: 10px;
+    padding: 5px 0;
+    font-size: 12.5px;
+    align-items: baseline;
+    border-bottom: 1px solid var(--b-border);
+  }
+  .proc-row.proc-head {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    color: var(--b-text-3);
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--b-border-2);
+    margin-bottom: 2px;
+    padding-bottom: 4px;
+  }
+  .proc-row:last-child { border-bottom: none; }
+  .proc-comm { color: var(--b-text); }
+  .proc-right { text-align: right; font-variant-numeric: tabular-nums; }
+
+  @media (max-width: 720px) {
+    .proc-row { grid-template-columns: 1.5fr 70px 80px 50px 70px; gap: 6px; font-size: 11.5px; }
+  }
 </style>
