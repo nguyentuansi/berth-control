@@ -84,10 +84,16 @@
       scope: 'user' | 'system' | null;
     } | null;
   };
-  let livestate: Record<string, LiveStatus> = $state({});
-  let liveTs: number = $state(0);
-  let tailscaleHost: string | null = $state(null);
-  let tailscaleAvailable: boolean = $state(false);
+  // Hydrate from the server's snapshot so the first render reflects reality.
+  // Without this seed, every app shows a "Start" button for the SSE-connect
+  // window even when its listener is already up — looked broken for foreign
+  // listeners that berth correctly detects but doesn't own.
+  let livestate: Record<string, LiveStatus> = $state(
+    (data.initialLive?.byApp ?? {}) as Record<string, LiveStatus>
+  );
+  let liveTs: number = $state(data.initialLive?.ts ?? 0);
+  let tailscaleHost: string | null = $state(data.initialLive?.tailscaleHost ?? null);
+  let tailscaleAvailable: boolean = $state(!!data.initialLive?.tailscaleAvailable);
 
   type RepoState = {
     default_branch: string | null;

@@ -6,6 +6,7 @@ import { liveSnapshot, reapDead } from '$lib/server/supervisor.js';
 import { getServeStatus, mappingsByLocalPort } from '$lib/server/tailscale-serve.js';
 import { snapshotProcStats } from '$lib/server/proc-stats.js';
 import { isDemoMode, DEMO_STATE, DEMO_TAILSCALE_HOST } from '$lib/server/demo.js';
+import { readAllRepoStates } from '$lib/server/repo-fetcher.js';
 
 interface LiveStatus {
   up: boolean;
@@ -52,6 +53,22 @@ interface Snapshot {
   tailscaleHost: string | null;
   /** Whether the tailscale daemon is reachable + we can read serve status. */
   tailscaleAvailable: boolean;
+  /** Per-app cached git sync state — updated by the background sweep + the
+   *  manual fetch endpoint. Cards render the `↑N` badge + Pull button from
+   *  this; nothing in the SSE tick path triggers any git work. */
+  repos: Record<
+    string,
+    {
+      default_branch: string | null;
+      commits_behind: number;
+      commits_ahead: number;
+      fetch_status: string;
+      fetch_error: string | null;
+      last_fetched_at: number | null;
+      local_sha: string | null;
+      remote_sha: string | null;
+    }
+  >;
 }
 
 /** Walk ppid up from `pid`, returning true if `target` is somewhere in the
@@ -80,7 +97,13 @@ function isAncestor(pid: number, target: number, cache: Map<number, boolean>): b
   return false;
 }
 
-async function snapshot(): Promise<Snapshot> {
+// `_`-prefixed so SvelteKit allows the export from a +server.ts file
+// (only HTTP method names + underscore-prefixed helpers are permitted).
+// Exported so `+page.server.ts` can hydrate the dashboard's `livestate`
+// on the initial server render — without this, every app shows a "Start"
+// button for the first 100-300ms while the client waits for the first SSE
+// frame, even if the app is actually running.
+export async function _snapshot(): Promise<Snapshot> {
   if (isDemoMode()) return demoSnapshot();
   reapDead();
   const [listeners, ts] = await Promise.all([listListeners(), getServeStatus()]);
@@ -198,7 +221,8 @@ async function snapshot(): Promise<Snapshot> {
     ts: Date.now(),
     byApp,
     tailscaleHost: ts.host,
-    tailscaleAvailable: ts.available
+    tailscaleAvailable: ts.available,
+    repos: readAllRepoStates()
   };
 }
 
@@ -248,7 +272,8 @@ function demoSnapshot(): Snapshot {
     ts: Date.now(),
     byApp,
     tailscaleHost: DEMO_TAILSCALE_HOST,
-    tailscaleAvailable: true
+    tailscaleAvailable: true,
+    repos: {}
   };
 }
 
@@ -263,7 +288,7 @@ export const GET: RequestHandler = async ({ request }) => {
       };
       const tick = async () => {
         try {
-          const s = await snapshot();
+          const s = await _snapshot();
           send(s);
         } catch (e) {
           send({ error: e instanceof Error ? e.message : String(e) });
