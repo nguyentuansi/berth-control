@@ -102,6 +102,13 @@ export class HostRewriteProxy {
   // HTTP request handling — pipe the request body to the upstream, pipe the
   // response back, never buffer. Same memory profile regardless of payload
   // size.
+  //
+  // `family: 0` + `autoSelectFamily: true` makes node do happy-eyeballs on
+  // the upstream connection. Many dev runners (vite, wrangler) bind only
+  // IPv6 loopback `[::1]` when the config says `host: '127.0.0.1'`; the
+  // hostname `'localhost'` resolves to both v4 and v6 and node picks the
+  // one that actually answers. Without this, a IPv6-only-bound dev server
+  // gets a 502 from the proxy.
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
     const headers = { ...req.headers };
     headers.host = this.rewriteHost;
@@ -112,7 +119,9 @@ export class HostRewriteProxy {
         port: this.opts.targetPort,
         method: req.method,
         path: req.url,
-        headers
+        headers,
+        family: 0,
+        autoSelectFamily: true
       },
       (proxyRes) => {
         // Strip the framework-level transfer-encoding / content-length
@@ -158,7 +167,14 @@ export class HostRewriteProxy {
     targetSocket.on('error', cleanup);
     clientSocket.on('error', cleanup);
 
-    targetSocket.connect(this.opts.targetPort, this.opts.targetHost, () => {
+    // Same happy-eyeballs reasoning as handleHttp — vite HMR is over WS,
+    // and a IPv6-only-bound dev server would otherwise refuse our v4 dial.
+    targetSocket.connect({
+      host: this.opts.targetHost,
+      port: this.opts.targetPort,
+      family: 0,
+      autoSelectFamily: true
+    }, () => {
       // Rebuild the request line + headers with Host rewritten.
       const headers = { ...req.headers };
       headers.host = this.rewriteHost;
@@ -194,7 +210,12 @@ const proxiesByLocalPort = new Map<number, HostRewriteProxy>();
 export async function ensureHostRewriteProxy(devPort: number): Promise<number> {
   const existing = proxiesByLocalPort.get(devPort);
   if (existing) return existing.port;
-  const proxy = new HostRewriteProxy({ targetHost: '127.0.0.1', targetPort: devPort });
+  // `localhost` (not `127.0.0.1`) so DNS returns both 127.0.0.1 and ::1;
+  // combined with the http.request `family: 0` + autoSelectFamily inside
+  // the proxy, node picks whichever the dev server actually bound. Vite
+  // and several other runners bind ONLY [::1] when their config says
+  // `host: '127.0.0.1'` — without this we'd 502.
+  const proxy = new HostRewriteProxy({ targetHost: 'localhost', targetPort: devPort });
   const port = await proxy.start();
   proxiesByLocalPort.set(devPort, proxy);
   return port;
