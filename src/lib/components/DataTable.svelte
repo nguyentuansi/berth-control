@@ -14,6 +14,9 @@
 		sortable?: boolean;
 		align?: 'left' | 'right' | 'center';
 		width?: string;
+		/** Optional CSS class applied to every cell in this column — used
+		 *  by the consumer to attach width/typography overrides. */
+		class?: string;
 		render?: Snippet<[T]>;
 	};
 
@@ -25,6 +28,7 @@
 		filterPlaceholder = 'Filter rows…',
 		class: className = '',
 		emptyMessage = 'No rows.',
+		rowClass,
 	}: {
 		rows: T[];
 		columns: Column<T>[];
@@ -33,6 +37,11 @@
 		filterPlaceholder?: string;
 		class?: string;
 		emptyMessage?: string;
+		/** Per-row class hook. Lets the consumer mark sub-app rows,
+		 *  collapsed-folder rows, dim/inactive rows, etc. without needing
+		 *  to fork the table. Without this, every consumer-supplied class
+		 *  on the rows is silently lost. */
+		rowClass?: (row: T, index: number) => string;
 	} = $props();
 
 	let filter = $state('');
@@ -125,13 +134,19 @@
 			</thead>
 			<tbody>
 				{#each visible as row, i}
-					<tr class="border-b border-ui-border last:border-b-0 hover:bg-ui-accent/30 transition-colors">
+					<tr
+						class={cn(
+							'border-b border-ui-border last:border-b-0 hover:bg-ui-accent/30 transition-colors',
+							rowClass?.(row, i),
+						)}
+					>
 						{#each columns as col}
 							<td
 								class={cn(
 									'h-12 px-3 text-ui-foreground/90',
 									col.align === 'right' && 'text-right',
 									col.align === 'center' && 'text-center',
+									col.class,
 								)}
 							>
 								{#if col.render}{@render col.render(row)}{:else}{row[col.key]}{/if}

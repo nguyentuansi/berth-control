@@ -2679,6 +2679,12 @@
       padding-left: 12px;
       padding-right: 0;
       overflow: visible;
+      /* The cell is empty except for the dot. The inherited
+         `text-overflow: ellipsis` from `.list tbody td` causes the
+         browser to render an ellipsis character (`…`) next to the dot
+         on the empty line — visually looks like the dot has '..' after
+         it, which reads as a status indicator. Force clip. */
+      text-overflow: clip;
     }
     .list .col-name {
       min-width: 220px;
