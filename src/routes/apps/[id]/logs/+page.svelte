@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
-  import { ChevronLeft, Search, Download } from 'lucide-svelte';
+  import { onDestroy, tick } from 'svelte';
+  import { ChevronLeft, Search, Download, ArrowDown } from 'lucide-svelte';
   import type { PageData } from './$types.js';
 
   let { data }: { data: PageData } = $props();
@@ -10,6 +10,10 @@
   let runId: number | null = $state(data.openRun?.id ?? data.recent[0]?.id ?? null);
   let filter = $state('');
   let onlyStderr = $state(false);
+  // `stickToBottom` is auto-managed: it's true when the user is at (or
+  // within 40px of) the bottom of the scroll area, false the moment they
+  // scroll up. New log lines only force a scroll-to-bottom while this is
+  // true — so reading history isn't a tug-of-war with the live tail.
   let stickToBottom = $state(true);
   let pre: HTMLElement | undefined = $state();
   let es: EventSource | null = null;
@@ -18,6 +22,11 @@
   // Strip CSI sequences so they don't render as literal `[36m` noise.
   const ANSI_CSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
   const stripAnsi = (s: string) => s.replace(ANSI_CSI, '');
+
+  function isAtBottom(): boolean {
+    if (!pre) return true;
+    return pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  }
 
   function connect() {
     es?.close();
@@ -29,7 +38,10 @@
         const j = JSON.parse((m as MessageEvent).data) as Line;
         j.line = stripAnsi(j.line);
         lines = [...lines.slice(-4999), j];
-        if (stickToBottom) {
+        // Only snap to bottom when the user is ALREADY there. If they
+        // scrolled up to read an earlier line, we leave them where they
+        // are and let them choose to come back via "Jump to bottom".
+        if (stickToBottom && isAtBottom()) {
           await tick();
           pre?.scrollTo({ top: pre.scrollHeight });
         }
@@ -39,11 +51,26 @@
     });
   }
 
+  // `$effect` reads `runId` so this re-runs ONCE per runId change (and once
+  // on mount). The previous code ALSO registered onMount(connect) which
+  // double-fired connect() on initial mount — two live EventSources, each
+  // replaying history, lines double, auto-scroll fires twice per line. Gone.
   $effect(() => {
     connect();
   });
-  onMount(() => connect());
   onDestroy(() => es?.close());
+
+  // Watch the user's scroll position. If they scroll away from the bottom
+  // we drop `stickToBottom`; if they scroll back we re-enable it. The
+  // user's intent is encoded entirely in their scroll position.
+  function onScroll() {
+    stickToBottom = isAtBottom();
+  }
+  function jumpToBottom() {
+    if (!pre) return;
+    pre.scrollTo({ top: pre.scrollHeight });
+    stickToBottom = true;
+  }
 
   const filtered = $derived(
     lines.filter((l) => {
@@ -90,16 +117,24 @@
     <label class="chk">
       <input type="checkbox" bind:checked={onlyStderr} /> stderr only
     </label>
-    <label class="chk">
-      <input type="checkbox" bind:checked={stickToBottom} /> follow
-    </label>
+    <span class="chk follow-state" title={stickToBottom ? 'live tail' : 'paused (scroll up — click Jump to resume)'}>
+      <span class="follow-dot" class:on={stickToBottom}></span>
+      {stickToBottom ? 'following' : 'paused'}
+    </span>
     <button class="b-btn" onclick={downloadAll}>
       <Download size={13} /> Download
     </button>
   </div>
 </header>
 
-<pre bind:this={pre} class="logview b-surface b-mono">{#each filtered as l (l.id)}<span class={l.stream}><span class="ts">{new Date(l.ts).toLocaleTimeString()}</span> {l.line}</span>{/each}{#if filtered.length === 0}<span class="empty">— no lines yet —</span>{/if}</pre>
+<div class="logwrap">
+  <pre bind:this={pre} class="logview b-surface b-mono" onscroll={onScroll}>{#each filtered as l (l.id)}<span class={l.stream}><span class="ts">{new Date(l.ts).toLocaleTimeString()}</span> {l.line}</span>{/each}{#if filtered.length === 0}<span class="empty">— no lines yet —</span>{/if}</pre>
+  {#if !stickToBottom}
+    <button class="b-btn jump" onclick={jumpToBottom} title="Jump to latest">
+      <ArrowDown size={13} /> Latest
+    </button>
+  {/if}
+</div>
 
 <style>
   .crumb { font-size: 13px; margin: 4px 0 8px; }
@@ -110,6 +145,9 @@
   .picker, .srch, .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--b-text-2); }
   .picker span { font-size: 11px; }
 
+  .logwrap {
+    position: relative;
+  }
   .logview {
     height: calc(100vh - 200px);
     min-height: 320px;
@@ -119,6 +157,36 @@
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
+    /* Hint the browser this scroller is its own scroll context — avoids
+       reflowing the whole page on every wheel tick when there are 5000+
+       lines. Crucial for crashed apps that dumped a huge error spew. */
+    contain: strict;
+    overscroll-behavior: contain;
+  }
+  .jump {
+    position: absolute;
+    right: 18px;
+    bottom: 14px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    background: var(--b-accent);
+    color: var(--b-bg);
+    border-color: transparent;
+  }
+  /* "following / paused" pill — replaces the manual checkbox; the dot's
+     color signals whether new lines auto-scroll. */
+  .follow-state {
+    user-select: none;
+  }
+  .follow-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--b-text-3);
+  }
+  .follow-dot.on {
+    background: var(--b-ok);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--b-ok) 25%, transparent);
   }
   .logview .stderr { color: var(--b-bad); display: block; }
   .logview .stdout { color: var(--b-text); display: block; }
