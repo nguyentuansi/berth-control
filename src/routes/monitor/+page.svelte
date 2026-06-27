@@ -1210,7 +1210,18 @@
     padding-bottom: 4px;
   }
   .proc-row:last-child { border-bottom: none; }
-  .proc-comm { color: var(--b-text); }
+  /* `min-width: 0` is the load-bearing bit — without it the 2fr track
+     resolves to the column's intrinsic content width, which for a long
+     binary path or a launchd-style reverse-DNS name blows the row past
+     the card edge. With min-width: 0 the cell can shrink and ellipsis
+     fires as expected. Same fix on .svc-name below. */
+  .proc-comm {
+    color: var(--b-text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .proc-right { text-align: right; font-variant-numeric: tabular-nums; }
 
   @media (max-width: 720px) {
@@ -1252,7 +1263,13 @@
   .svc-dot.failed { background: var(--b-bad); }
   .svc-dot.unknown { background: var(--b-warn); opacity: 0.7; }
   .svc-status-text { text-transform: capitalize; }
-  .svc-name { color: var(--b-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .svc-name {
+    color: var(--b-text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .svc-detail { text-align: right; }
 
   .card-head input[type="search"] {
