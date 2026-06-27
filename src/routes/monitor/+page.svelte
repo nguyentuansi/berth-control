@@ -154,26 +154,34 @@
     return series;
   });
 
-  const usageSeries = $derived.by(() => {
-    const series: { label: string; color: string; data: { ts: number; value: number }[] }[] = [];
+  // CPU and Memory live on their own time-series cards. Each is a
+  // single-series MultiLineChart so the Y-axis auto-scales to the data
+  // (a 5-15% CPU range stays readable instead of being flattened against
+  // a 0-100% axis dominated by RAM).
+  const cpuUsageSeries = $derived.by(() => {
     const cpu = history.filter((s) => s.cpu_util_total != null);
-    if (cpu.length > 1)
-      series.push({
+    if (cpu.length <= 1) return [];
+    return [
+      {
         label: 'CPU %',
         color: 'var(--ui-primary)',
         data: cpu.map((s) => ({ ts: s.ts, value: s.cpu_util_total! }))
-      });
+      }
+    ];
+  });
+  const memUsageSeries = $derived.by(() => {
     const mem = history.filter((s) => s.mem_total_mb != null && s.mem_available_mb != null);
-    if (mem.length > 1)
-      series.push({
+    if (mem.length <= 1) return [];
+    return [
+      {
         label: 'Memory %',
         color: 'var(--ui-success)',
         data: mem.map((s) => ({
           ts: s.ts,
           value: ((s.mem_total_mb! - s.mem_available_mb!) / s.mem_total_mb!) * 100
         }))
-      });
-    return series;
+      }
+    ];
   });
 
   // Status badge for a temperature value vs its configured threshold.
@@ -696,15 +704,28 @@
     </Card>
   {/if}
 
-  <!-- Multi-line CPU + Memory % chart -->
-  {#if usageSeries.length > 0}
+  <!-- CPU usage time-series (its own card) -->
+  {#if cpuUsageSeries.length > 0}
     <Card class="card card-wide">
       {#snippet children()}
         <div class="card-head">
-          <Activity size={14} />
-          <strong>CPU & Memory · {activeRange}</strong>
+          <Cpu size={14} />
+          <strong>CPU usage · {activeRange}</strong>
         </div>
-        <MultiLineChart series={usageSeries} yUnit="%" height={220} />
+        <MultiLineChart series={cpuUsageSeries} yUnit="%" height={220} />
+      {/snippet}
+    </Card>
+  {/if}
+
+  <!-- Memory usage time-series (its own card) -->
+  {#if memUsageSeries.length > 0}
+    <Card class="card card-wide">
+      {#snippet children()}
+        <div class="card-head">
+          <MemoryStick size={14} />
+          <strong>Memory usage · {activeRange}</strong>
+        </div>
+        <MultiLineChart series={memUsageSeries} yUnit="%" height={220} />
       {/snippet}
     </Card>
   {/if}

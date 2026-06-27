@@ -171,16 +171,15 @@ export async function startHostMonitor(): Promise<void> {
     activeTimer.unref();
   };
 
-  // Schedule retention sweep once an hour. unref'd so it doesn't keep berth
-  // alive at shutdown.
-  const retentionSweep = setInterval(() => {
-    try {
-      const cutoff = Date.now() - cfg.retentionDays * 86_400_000;
-      db.delete(host_readings).where(lt(host_readings.ts, new Date(cutoff))).run();
-    } catch {
-      /* */
-    }
-  }, 3_600_000);
+  // Retention sweep — matches pcmonitor's once-per-day cadence so an idle
+  // berth-control machine doesn't churn the DB. Also runs once at boot so
+  // a long-stopped install doesn't carry forward weeks of stale rows; an
+  // empty / fresh DB just deletes 0 rows, which is harmless.
+  runRetentionSweep(cfg.retentionDays);
+  const retentionSweep = setInterval(
+    () => runRetentionSweep(cfg.retentionDays),
+    86_400_000
+  );
   retentionSweep.unref();
 
   // Kick the first tick on a short delay so it doesn't race with bootOnce's
@@ -206,6 +205,31 @@ function adaptiveDelayMs(cfg: Config): number {
     if (usedPct >= cfg.ramPressurePct) return cfg.fastIntervalSecs * 1000;
   }
   return cfg.intervalSecs * 1000;
+}
+
+/** Delete host_readings older than `retentionDays`. Logs the deleted row
+ *  count (info if > 0, otherwise silent — pcmonitor's pattern). Errors are
+ *  warned and swallowed so a corrupt DB or locked file can't crash the
+ *  collector loop. */
+function runRetentionSweep(retentionDays: number): void {
+  try {
+    const cutoff = Date.now() - retentionDays * 86_400_000;
+    const result = db
+      .delete(host_readings)
+      .where(lt(host_readings.ts, new Date(cutoff)))
+      .run();
+    const deleted = (result as { changes?: number }).changes ?? 0;
+    if (deleted > 0) {
+      console.log(
+        `[monitor] retention: deleted ${deleted} row(s) older than ${retentionDays}d`
+      );
+    }
+  } catch (e) {
+    console.warn(
+      '[monitor] retention sweep failed:',
+      e instanceof Error ? e.message : String(e)
+    );
+  }
 }
 
 function persistSample(ts: number, s: HostSample): void {
