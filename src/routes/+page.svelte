@@ -2357,9 +2357,8 @@
     color: var(--b-text);
     text-decoration: none;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
     font-weight: 500;
   }
   .folder-row.dim .folder-row-name {
@@ -2559,14 +2558,17 @@
     gap: 6px;
   }
   .title { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+  /* Names wrap rather than ellipsing. Names like `sample-monorepo` were
+     getting clipped to `jarvis-minia...` which read as a status indicator
+     next to the real status dot. Wrapping costs a few pixels of card
+     height for long names but never produces visually-ambiguous dots. */
   .name {
     font-weight: 600;
     color: var(--b-text);
     text-decoration: none;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    min-width: 0;
   }
   .name:hover { color: var(--b-accent); }
   .meta { display: flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; }
