@@ -7,7 +7,8 @@ import { isDemoMode } from '$lib/server/demo.js';
 import { startUptimeHeartbeat } from '$lib/server/uptime.js';
 import { pruneExpired } from '$lib/server/auth.js';
 import { startBackgroundSweep } from '$lib/server/repo-fetcher.js';
-import { startHostMonitor } from '$lib/server/monitor/collector.js';
+import { startHostMonitor, stopHostMonitor } from '$lib/server/monitor/collector.js';
+import { listHostRewriteProxies, stopHostRewriteProxy } from '$lib/server/host-rewrite-proxy.js';
 
 // Adapter-node's static-file handler streams files off disk with a Node
 // ReadStream; when a browser asks for an asset that no longer exists (a
@@ -25,6 +26,38 @@ process.on('uncaughtException', (e: NodeJS.ErrnoException) => {
   // handler (and any other listeners) still get to see it.
   setImmediate(() => { throw e; });
 });
+
+// Graceful shutdown — adapter-node already closes the HTTP server on SIGTERM,
+// but our background facilities keep the event loop alive forever and prevent
+// the process from exiting:
+//
+//   - Host-rewrite proxies are net.Server instances bound to ephemeral ports;
+//     each `server.listen()` ref's the loop until closed.
+//   - The monitor collector schedules itself with setTimeout — we unref the
+//     timer, but it still re-arms each tick.
+//   - better-sqlite3 keeps a synchronous handle open.
+//
+// Without explicit teardown, every "restart" would orphan the previous
+// process: it'd release :5202 (adapter closes its server) but stay alive
+// running the collector + holding proxy ports. Repeat across a dev session
+// and you end up with 7 zombies all writing to the same SQLite DB, which
+// surfaces as bad UI latency. Wiring SIGTERM/SIGINT to stop the proxies +
+// collector lets node's normal "event loop empty → exit" path fire.
+let shuttingDown = false;
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[berth] ${signal} — shutting down …`);
+  try { stopHostMonitor(); } catch { /* */ }
+  const proxies = listHostRewriteProxies();
+  await Promise.all(proxies.map((p) => stopHostRewriteProxy(p.devPort).catch(() => {})));
+  console.log(`[berth] shutdown complete (stopped monitor + ${proxies.length} proxies)`);
+  // Give the rest of the event loop a tick to drain (final DB write from the
+  // collector tick that was in flight when the signal arrived), then exit.
+  setTimeout(() => process.exit(0), 100).unref();
+}
+process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
 
 let bootDone = false;
 function bootOnce() {
