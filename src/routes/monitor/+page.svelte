@@ -732,7 +732,7 @@
           <Thermometer size={14} />
           <strong>Temperatures · {activeRange}</strong>
         </div>
-        <MultiLineChart series={tempSeries} yUnit="°C" height={220} />
+        <MultiLineChart series={tempSeries} yUnit="°C" height={220} interactive />
       {/snippet}
     </Card>
   {/if}
@@ -745,7 +745,7 @@
           <Cpu size={14} />
           <strong>CPU usage · {activeRange}</strong>
         </div>
-        <MultiLineChart series={cpuUsageSeries} yUnit="%" height={220} />
+        <MultiLineChart series={cpuUsageSeries} yUnit="%" height={220} interactive />
       {/snippet}
     </Card>
   {/if}
@@ -758,7 +758,7 @@
           <MemoryStick size={14} />
           <strong>Memory usage · {activeRange}</strong>
         </div>
-        <MultiLineChart series={memUsageSeries} yUnit="%" height={220} />
+        <MultiLineChart series={memUsageSeries} yUnit="%" height={220} interactive />
       {/snippet}
     </Card>
   {/if}
