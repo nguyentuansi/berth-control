@@ -34,7 +34,9 @@
   import VisibilityBadge from '$lib/components/VisibilityBadge.svelte';
   import GrantsModal from '$lib/components/GrantsModal.svelte';
   import RemoveAppModal from '$lib/components/RemoveAppModal.svelte';
-  import VitePatchModal from '$lib/components/VitePatchModal.svelte';
+  // The vite-config patcher was removed — tailnet hostnames now route
+  // through berth-control's Host-rewrite proxy (src/lib/server/host-rewrite-proxy.ts)
+  // so no user-repo edit is ever required.
   import MiniLogWindow from '$lib/components/MiniLogWindow.svelte';
   // Vendored from @berth/ui — see src/lib/components/DataTable.svelte.
   import DataTable from '$lib/components/DataTable.svelte';
@@ -661,79 +663,8 @@
     if (typeof localStorage !== 'undefined') localStorage.setItem('berth.view', v);
   }
 
-  // Patch consent modal state. The user must approve before berth writes any
-  // edit into their vite.config — silent edits are surprise edits. We cache
-  // a "skipped this session" per-app so we don't re-prompt within one tab
-  // session (the modal would otherwise re-appear on every Start).
-  type Preview = {
-    needsPatch: boolean;
-    configPath: string | null;
-    reason: string | null;
-    beforeLine: string | null;
-    afterLine: string | null;
-    afterFull: string | null;
-    manualSnippet: string;
-  };
-  let patchModalAppId = $state<string | null>(null);
-  let patchModalPreview = $state<Preview | null>(null);
-  let patchModalContinue = $state<(() => void) | null>(null);
-  const patchSkipped = new Set<string>();
-
-  // Gate any start: dry-run the patch check. If a patch is needed and the
-  // user hasn't already skipped it this session, pop the modal. The modal's
-  // Apply / Skip / Close paths feed into `patchModalContinue` so the caller's
-  // start sequence resumes from where it paused.
-  function gateBeforeStart(id: string, resume: () => void): boolean {
-    if (patchSkipped.has(id)) {
-      resume();
-      return true;
-    }
-    void (async () => {
-      try {
-        const r = await fetch(`/api/apps/${encodeURIComponent(id)}/vite-config`);
-        if (!r.ok) {
-          // Endpoint failed for some reason — don't block start.
-          resume();
-          return;
-        }
-        const preview = (await r.json()) as Preview;
-        if (!preview.needsPatch) {
-          resume();
-          return;
-        }
-        // Need the user's consent before mutating their repo.
-        patchModalAppId = id;
-        patchModalPreview = preview;
-        patchModalContinue = resume;
-      } catch {
-        resume();
-      }
-    })();
-    return false;
-  }
-
-  function patchApplied() {
-    const r = patchModalContinue;
-    patchModalAppId = null;
-    patchModalPreview = null;
-    patchModalContinue = null;
-    r?.();
-  }
-  function patchSkippedNow() {
-    const id = patchModalAppId;
-    const r = patchModalContinue;
-    if (id) patchSkipped.add(id);
-    patchModalAppId = null;
-    patchModalPreview = null;
-    patchModalContinue = null;
-    r?.();
-  }
-  function patchClosed() {
-    patchModalAppId = null;
-    patchModalPreview = null;
-    patchModalContinue = null;
-    // No resume — the user cancelled.
-  }
+  // (vite-config patch consent modal removed — Approach A handles
+  // tailnet Host headers via the Host-rewrite proxy. Nothing to gate.)
 
   // Mini-log window state — appears bottom-right on Start, above the toaster.
   // Holds one app at a time (the most recent Start); the user can close it
@@ -751,14 +682,6 @@
   async function act(id: string, kind: 'start' | 'stop' | 'restart') {
     if (!isAdmin) {
       viewerToast();
-      return;
-    }
-    // Patch consent gate — only for start/restart, since stop doesn't run
-    // the user's config. If the modal opens, the rest of `act` runs from
-    // its resume callback; we return early here.
-    if (kind === 'start' || kind === 'restart') {
-      const proceeded = gateBeforeStart(id, () => doAct(id, kind));
-      if (!proceeded) return;
       return;
     }
     return doAct(id, kind);
@@ -1164,20 +1087,6 @@
       app={ra}
       {childCount}
       onClose={() => (removeOpenAppId = null)}
-    />
-  {/if}
-{/if}
-
-{#if patchModalAppId && patchModalPreview}
-  {@const pa = data.apps.find((a) => a.id === patchModalAppId)}
-  {#if pa}
-    <VitePatchModal
-      appId={pa.id}
-      appName={pa.name}
-      preview={patchModalPreview}
-      onClose={patchClosed}
-      onApplied={patchApplied}
-      onSkipped={patchSkippedNow}
     />
   {/if}
 {/if}
