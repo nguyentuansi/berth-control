@@ -3,6 +3,7 @@
   import { Cpu, MemoryStick, HardDrive, Thermometer, Activity, Wifi, AlertTriangle, Server, ListChecks } from 'lucide-svelte';
   import Card from '@berth/ui/Card.svelte';
   import Chart from '@berth/ui/Chart.svelte';
+  import MultiLineChart from '@berth/ui/MultiLineChart.svelte';
 
   // Live host monitoring page.
   //
@@ -104,6 +105,76 @@
 
   let sysInfo = $state<SystemInfo | null>(null);
   let processes = $state<ProcRow[]>([]);
+  type ServiceRow = {
+    name: string;
+    status: 'running' | 'stopped' | 'failed' | 'unknown';
+    sub: string;
+    description: string | null;
+    pid: number | null;
+  };
+  let services = $state<ServiceRow[]>([]);
+  let serviceFilter = $state('');
+
+  const filteredServices = $derived.by(() => {
+    const q = serviceFilter.trim().toLowerCase();
+    if (!q) return services;
+    return services.filter((s) => s.name.toLowerCase().includes(q));
+  });
+
+  // Build the data shape MultiLineChart consumes from the history array.
+  // One helper per chart so the page can show "Temperatures (CPU+GPU+NVMe)"
+  // and "CPU + Memory" overlays without per-card timeline math.
+  const tempSeries = $derived.by(() => {
+    const series: { label: string; color: string; data: { ts: number; value: number }[] }[] = [];
+    const cpu = history.filter((s) => s.cpu_pkg_temp != null);
+    if (cpu.length > 1)
+      series.push({
+        label: 'CPU',
+        color: 'var(--ui-primary)',
+        data: cpu.map((s) => ({ ts: s.ts, value: s.cpu_pkg_temp! }))
+      });
+    const gpu = history.filter((s) => s.gpu_temp != null);
+    if (gpu.length > 1)
+      series.push({
+        label: 'GPU',
+        color: 'var(--ui-destructive)',
+        data: gpu.map((s) => ({ ts: s.ts, value: s.gpu_temp! }))
+      });
+    // Pull any NVMe temp out of misc_temps if present.
+    const nvme = history
+      .filter(
+        (s) => s.misc_temps && Object.keys(s.misc_temps).some((k) => /nvme/i.test(k))
+      )
+      .map((s) => {
+        const k = Object.keys(s.misc_temps!).find((k) => /nvme/i.test(k))!;
+        return { ts: s.ts, value: s.misc_temps![k] };
+      });
+    if (nvme.length > 1)
+      series.push({ label: 'NVMe', color: 'var(--ui-warning)', data: nvme });
+    return series;
+  });
+
+  const usageSeries = $derived.by(() => {
+    const series: { label: string; color: string; data: { ts: number; value: number }[] }[] = [];
+    const cpu = history.filter((s) => s.cpu_util_total != null);
+    if (cpu.length > 1)
+      series.push({
+        label: 'CPU %',
+        color: 'var(--ui-primary)',
+        data: cpu.map((s) => ({ ts: s.ts, value: s.cpu_util_total! }))
+      });
+    const mem = history.filter((s) => s.mem_total_mb != null && s.mem_available_mb != null);
+    if (mem.length > 1)
+      series.push({
+        label: 'Memory %',
+        color: 'var(--ui-success)',
+        data: mem.map((s) => ({
+          ts: s.ts,
+          value: ((s.mem_total_mb! - s.mem_available_mb!) / s.mem_total_mb!) * 100
+        }))
+      });
+    return series;
+  });
 
   // Status badge for a temperature value vs its configured threshold.
   // Returns "Normal" if below warn, "Warning" otherwise. Null if either
@@ -320,6 +391,14 @@
       /* */
     }
   }
+  async function loadServices() {
+    try {
+      const r = await fetch('/api/monitor/services');
+      if (r.ok) services = (await r.json()).services ?? [];
+    } catch {
+      /* */
+    }
+  }
   function setRange(r: RangeKey) {
     if (r === activeRange) return;
     activeRange = r;
@@ -333,9 +412,13 @@
     void loadPushStatus();
     void loadSysInfo();
     void loadProcesses();
+    void loadServices();
     // Refresh process list every 5s — they churn fast and pushing via SSE
     // would more than double the per-tick payload for negligible UX gain.
+    // Services are slower-changing AND systemctl/launchctl spawns are
+    // pricier (~50-200ms) so refresh those every 30s.
     const procTimer = setInterval(() => void loadProcesses(), 5000);
+    const svcTimer = setInterval(() => void loadServices(), 30000);
 
     es = new EventSource('/api/monitor/state');
     es.addEventListener('meta', () => {
@@ -370,7 +453,10 @@
     // setup before the return is mandatory — Svelte 5 treats onMount's
     // return as cleanup, so an early `return` would skip the SSE wiring
     // entirely (the regression that caused live cards to stay blank).
-    return () => clearInterval(procTimer);
+    return () => {
+      clearInterval(procTimer);
+      clearInterval(svcTimer);
+    };
   });
   onDestroy(() => {
     es?.close();
@@ -597,6 +683,32 @@
     </Card>
   {/if}
 
+  <!-- Multi-line temperature chart -->
+  {#if tempSeries.length > 0}
+    <Card class="card card-wide">
+      {#snippet children()}
+        <div class="card-head">
+          <Thermometer size={14} />
+          <strong>Temperatures · {activeRange}</strong>
+        </div>
+        <MultiLineChart series={tempSeries} yUnit="°C" height={220} />
+      {/snippet}
+    </Card>
+  {/if}
+
+  <!-- Multi-line CPU + Memory % chart -->
+  {#if usageSeries.length > 0}
+    <Card class="card card-wide">
+      {#snippet children()}
+        <div class="card-head">
+          <Activity size={14} />
+          <strong>CPU & Memory · {activeRange}</strong>
+        </div>
+        <MultiLineChart series={usageSeries} yUnit="%" height={220} />
+      {/snippet}
+    </Card>
+  {/if}
+
   <!-- Top processes -->
   {#if processes.length > 0}
     <Card class="card card-wide">
@@ -624,6 +736,50 @@
             </div>
           {/each}
         </div>
+      {/snippet}
+    </Card>
+  {/if}
+
+  <!-- Services -->
+  {#if services.length > 0}
+    <Card class="card card-wide">
+      {#snippet children()}
+        <div class="card-head">
+          <ListChecks size={14} />
+          <strong>Services</strong>
+          <span class="b-mute2 small">({services.length} total · {services.filter((s) => s.status === 'running').length} running)</span>
+          <span class="card-head-trail">
+            <input
+              type="search"
+              class="b-input"
+              placeholder="Filter…"
+              bind:value={serviceFilter}
+              aria-label="Filter services"
+            />
+          </span>
+        </div>
+        <div class="svc-table">
+          <div class="svc-row svc-head">
+            <span>Status</span>
+            <span>Name</span>
+            <span class="svc-detail">Detail</span>
+          </div>
+          {#each filteredServices.slice(0, 100) as s (s.name)}
+            <div class="svc-row">
+              <span class="svc-status">
+                <span class="svc-dot {s.status}" title={s.status}></span>
+                <span class="svc-status-text">{s.status}</span>
+              </span>
+              <span class="b-mono svc-name" title={s.description ?? s.name}>{s.name}</span>
+              <span class="svc-detail b-mute2 b-mono">
+                {s.pid != null ? `pid ${s.pid}` : s.sub}
+              </span>
+            </div>
+          {/each}
+        </div>
+        {#if filteredServices.length > 100}
+          <p class="threshold-hint">Showing first 100 of {filteredServices.length} matching services.</p>
+        {/if}
       {/snippet}
     </Card>
   {/if}
@@ -980,5 +1136,49 @@
 
   @media (max-width: 720px) {
     .proc-row { grid-template-columns: 1.5fr 70px 80px 50px 70px; gap: 6px; font-size: 11.5px; }
+  }
+
+  .svc-table {
+    margin-top: 6px;
+    max-height: 420px;
+    overflow-y: auto;
+  }
+  .svc-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 140px;
+    gap: 10px;
+    padding: 5px 0;
+    font-size: 12.5px;
+    align-items: baseline;
+    border-bottom: 1px solid var(--b-border);
+  }
+  .svc-row.svc-head {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    color: var(--b-text-3);
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--b-border-2);
+  }
+  .svc-row:last-child { border-bottom: none; }
+  .svc-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--b-text-2); }
+  .svc-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--b-text-3);
+    flex-shrink: 0;
+  }
+  .svc-dot.running { background: var(--b-ok); }
+  .svc-dot.stopped { background: var(--b-text-3); }
+  .svc-dot.failed { background: var(--b-bad); }
+  .svc-dot.unknown { background: var(--b-warn); opacity: 0.7; }
+  .svc-status-text { text-transform: capitalize; }
+  .svc-name { color: var(--b-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .svc-detail { text-align: right; }
+
+  .card-head input[type="search"] {
+    padding: 4px 8px;
+    font-size: 12px;
+    max-width: 180px;
   }
 </style>
