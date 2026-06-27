@@ -9,6 +9,43 @@ import { pruneExpired } from '$lib/server/auth.js';
 import { startBackgroundSweep } from '$lib/server/repo-fetcher.js';
 import { startHostMonitor, stopHostMonitor } from '$lib/server/monitor/collector.js';
 import { listHostRewriteProxies, stopHostRewriteProxy } from '$lib/server/host-rewrite-proxy.js';
+import { acquireSingletonLock, releaseSingletonLock, LOCK_PATH } from '$lib/server/singleton.js';
+
+// Singleton-instance guard — run BEFORE any other boot work.
+//
+// berth-control silently fails when two instances coexist: they fight for
+// the SQLite WAL, double-spawn the prober, stack alert notifications, and
+// duplicate Host-rewrite proxy listeners. The first symptom is just bad UI
+// latency — there's no UI affordance to even notice the duplicates exist.
+//
+// The lockfile + SIGTERM handler combination guarantees:
+//   - At most one berth-control process can be running on a given box.
+//   - Clean exits release the lock; SIGKILLs leave a stale lock that the
+//     next start detects and overwrites.
+//   - Rejected starts log loudly to stderr with the live pid + how to kill
+//     it, so failures are NEVER silent.
+{
+  const lock = acquireSingletonLock();
+  if (!lock.acquired) {
+    const c = lock.conflict!;
+    const banner = '═'.repeat(72);
+    process.stderr.write(`\n╔${banner}╗\n`);
+    process.stderr.write(`║  ANOTHER berth-control IS ALREADY RUNNING — refusing to start.        ║\n`);
+    process.stderr.write(`╚${banner}╝\n`);
+    process.stderr.write(`  live pid: ${c.pid}\n`);
+    process.stderr.write(`  command:  ${c.cmd}\n`);
+    process.stderr.write(`  lockfile: ${LOCK_PATH}\n\n`);
+    process.stderr.write(`  To replace it cleanly:\n`);
+    process.stderr.write(`    kill ${c.pid} && sleep 2 && <re-launch>\n\n`);
+    process.stderr.write(`  If kill won't take (process is wedged), force it:\n`);
+    process.stderr.write(`    kill -9 ${c.pid}\n\n`);
+    process.exit(1);
+  }
+  console.log(
+    `[berth] singleton lock acquired (pid=${process.pid}, lockfile=${LOCK_PATH})` +
+      (lock.stale ? ' [cleaned stale lock from a prior crash/SIGKILL]' : '')
+  );
+}
 
 // Adapter-node's static-file handler streams files off disk with a Node
 // ReadStream; when a browser asks for an asset that no longer exists (a
@@ -51,10 +88,13 @@ async function gracefulShutdown(signal: string): Promise<void> {
   try { stopHostMonitor(); } catch { /* */ }
   const proxies = listHostRewriteProxies();
   await Promise.all(proxies.map((p) => stopHostRewriteProxy(p.devPort).catch(() => {})));
-  console.log(`[berth] shutdown complete (stopped monitor + ${proxies.length} proxies)`);
+  releaseSingletonLock();
+  console.log(`[berth] shutdown complete (stopped monitor + ${proxies.length} proxies, lock released)`);
   // Give the rest of the event loop a tick to drain (final DB write from the
-  // collector tick that was in flight when the signal arrived), then exit.
-  setTimeout(() => process.exit(0), 100).unref();
+  // collector tick that was in flight when the signal arrived), then force
+  // exit. 1.5s is generous — accommodates any unref'd-but-running timer in
+  // flight. Better to over-shoot here than orphan the process.
+  setTimeout(() => process.exit(0), 1500).unref();
 }
 process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
