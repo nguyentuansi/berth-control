@@ -132,6 +132,122 @@ export async function addServeMapping(localPort: number): Promise<void> {
     }
   }
   cache = { ts: 0, mappings: [], host: null, available: false };
+
+  // Visibility defense: tailscaled's TLS terminator can get into a wedged
+  // state where TCP accepts but the handshake aborts with a generic
+  // `internal_error` alert. The user sees a browser that spins forever and
+  // has no way to know it's tailscaled, not their app. Probe ONCE after
+  // publish, log a loud remediation hint if it fails. Fire-and-forget — the
+  // tailnet hostname is fetched lazily, the probe is bounded.
+  void verifyServeReachable(localPort).catch(() => {});
+}
+
+/** Best-effort post-publish probe: confirm the tailnet HTTPS endpoint
+ *  actually completes a TLS handshake. We dial the tailnet IPv4 directly
+ *  (avoiding node's DNS resolver, which doesn't know about MagicDNS) but
+ *  pass the hostname as the SNI/servername so tailscaled's TLS terminator
+ *  selects the right cert. That exercises the same handshake path the
+ *  user's browser hits when navigating to the tailnet URL — if the daemon
+ *  is wedged, we catch it; if it's healthy, we get a 200/3xx/401 (any
+ *  response means the TLS handshake completed, which is what we care
+ *  about). On failure, log a banner with the exact remediation command. */
+async function verifyServeReachable(localPort: number): Promise<void> {
+  const status = await getServeStatus(0);
+  const host = status.host;
+  if (!host) {
+    console.warn(
+      `[tailscale] published serve mapping for :${localPort} but no tailnet ` +
+        `hostname is known yet; skipping reachability probe`
+    );
+    return;
+  }
+
+  // Resolve the tailnet IPv4 ourselves so DNS isn't a confound — node's
+  // system resolver doesn't know MagicDNS, but the tailnet IP is always
+  // routable and the cert validates against `host` via SNI.
+  let tailnetIp: string | null = null;
+  try {
+    const { stdout } = await exec('tailscale', ['ip', '-4'], { timeout: 2000 });
+    tailnetIp = stdout.trim().split('\n')[0] || null;
+  } catch {
+    /* leave null — probe will fall back to hostname */
+  }
+
+  const probe = new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    import('node:https')
+      .then((https) => {
+        const req = https.request(
+          {
+            host: tailnetIp ?? host,
+            port: localPort,
+            path: '/',
+            method: 'HEAD',
+            // Force SNI to the tailnet hostname so tailscaled selects the
+            // Let's Encrypt cert for it. Without this, IP-based dial would
+            // get a default cert that fails verification.
+            servername: host,
+            rejectUnauthorized: true,
+            timeout: 4500
+          },
+          (res) => {
+            res.destroy();
+            resolve({ ok: true });
+          }
+        );
+        req.on('error', (e: NodeJS.ErrnoException) => {
+          resolve({ ok: false, error: e?.message ?? String(e) });
+        });
+        req.on('timeout', () => {
+          req.destroy();
+          resolve({ ok: false, error: 'probe timed out after 4.5s' });
+        });
+        req.end();
+      })
+      .catch((e) => resolve({ ok: false, error: String(e) }));
+  });
+
+  const result = await probe;
+  if (result.ok) {
+    console.log(
+      `[tailscale] reachable: https://${host}:${localPort}/ — TLS handshake ok`
+    );
+    return;
+  }
+
+  // Failure path — emit a banner so the user can grep `[tailscale]` in the
+  // log and immediately see the remediation. The exact LibreSSL/tlsv1
+  // "internal error" string is what curl prints; if we see it (or any TLS-
+  // shaped error), explain the tailscaled-restart fix.
+  const looksLikeTlsWedge = /tls|ssl|handshake|certificate|alert/i.test(result.error ?? '');
+  console.warn('');
+  console.warn(`[tailscale] ⚠  TAILNET HTTPS UNREACHABLE for :${localPort}`);
+  console.warn(`[tailscale]    target:    https://${host}:${localPort}/`);
+  console.warn(`[tailscale]    error:     ${result.error}`);
+  if (looksLikeTlsWedge) {
+    console.warn(
+      `[tailscale]    cause:     stale per-binding state in tailscaled's TLS layer.`
+    );
+    console.warn(
+      `[tailscale]               TCP accepts, the cert is healthy, but this port's`
+    );
+    console.warn(`[tailscale]               TLS terminator can't complete a handshake.`);
+    console.warn(`[tailscale]    fix:       re-publish the mapping (no sudo, no daemon restart):`);
+    console.warn(`[tailscale]                 tailscale serve --https=${localPort} off`);
+    console.warn(`[tailscale]                 tailscale serve --bg --https=${localPort} http://localhost:${localPort}`);
+    console.warn(`[tailscale]               If that doesn't clear it, restart tailscaled:`);
+    if (process.platform === 'darwin') {
+      console.warn(
+        `[tailscale]                 sudo launchctl kickstart -k system/com.tailscale.tailscaled`
+      );
+    } else {
+      console.warn(`[tailscale]                 sudo systemctl restart tailscaled`);
+    }
+  } else {
+    console.warn(
+      `[tailscale]    fix:       check 'tailscale status' and 'tailscale serve status'.`
+    );
+  }
+  console.warn('');
 }
 
 /**
