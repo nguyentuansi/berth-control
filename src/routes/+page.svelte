@@ -121,6 +121,19 @@
   let view: 'grid' | 'list' = $state('grid');
 
   let addOpen = $state(false);
+
+  // Onboarding dismiss: POST stamps users.tour_completed_at, then invalidateAll
+  // re-runs the page load, which now returns tourCompleted != null and both
+  // <OnboardingChecklist> and <OnboardingTour> stop rendering.
+  async function dismissOnboarding() {
+    try {
+      await fetch('/api/onboarding/dismiss', { method: 'POST' });
+    } catch (e) {
+      console.warn('[onboarding] dismiss failed:', e);
+    }
+    await invalidateAll();
+  }
+
   let grantsOpenAppId: string | null = $state(null);
   let removeOpenAppId: string | null = $state(null);
   /** When set alongside grantsOpenAppId, the GrantsModal opens in "pending
@@ -1781,11 +1794,21 @@
     addedAnApp={data.apps.length > 0}
     {startedAnApp}
     {sawGreen}
+    onAddApp={() => (addOpen = true)}
+    onStartFirst={() => {
+      // Find the first card with a visible "Start" button and scroll/focus it.
+      const btn = document.querySelector('button[title^="Start"]') as HTMLButtonElement | null;
+      if (btn) {
+        btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        btn.focus();
+      }
+    }}
+    onSkip={dismissOnboarding}
   />
 {/if}
 
 {#if data.user && data.tourCompleted == null && data.apps.length > 0}
-  <OnboardingTour />
+  <OnboardingTour onComplete={dismissOnboarding} />
 {/if}
 
 <!-- Floating dropdown. One element shared by both menu kinds — rendered at

@@ -9,7 +9,16 @@ export const load: PageServerLoad = async ({ locals }) => {
   const user = locals.user;
   // No user (shouldn't happen — hooks redirect to /login) → empty list.
   if (!user) {
-    return { apps: [], openByApp: {}, latestEvent: [], uptime: {}, grants: {}, initialLive: null };
+    return {
+      apps: [],
+      openByApp: {},
+      latestEvent: [],
+      uptime: {},
+      grants: {},
+      initialLive: null,
+      tourCompleted: null,
+      user: null
+    };
   }
   const list = db
     .select()
@@ -48,5 +57,24 @@ export const load: PageServerLoad = async ({ locals }) => {
   } catch (e) {
     console.warn('[dashboard] initial livestate snapshot failed:', e instanceof Error ? e.message : String(e));
   }
-  return { apps: list, openByApp, latestEvent, uptime, grants, initialLive };
+  // tour_completed_at gates the onboarding checklist + tour. If it's null,
+  // the user hasn't dismissed onboarding yet → show both. The dismiss
+  // endpoint stamps this column and the page invalidates.
+  const me = db
+    .select({ tour_completed_at: schema.users.tour_completed_at })
+    .from(schema.users)
+    .where(eq(schema.users.login, user.login))
+    .get();
+  const tourCompleted = me?.tour_completed_at ?? null;
+
+  return {
+    apps: list,
+    openByApp,
+    latestEvent,
+    uptime,
+    grants,
+    initialLive,
+    tourCompleted,
+    user
+  };
 };
