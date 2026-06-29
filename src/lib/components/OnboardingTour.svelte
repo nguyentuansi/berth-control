@@ -43,9 +43,9 @@
         'Each app shows a status dot: green = listener up, amber = managed ' +
         'process alive but not yet serving, red = down. Status updates within ' +
         '2 seconds of the OS state changing.',
-      // First card (grid) or first non-folder row (list). The whole row gets
-      // spotlit so the dot is clearly part of a row, not a floating pixel.
-      target: '.card:first-of-type, .list tbody tr:not(.folder-row):first-of-type'
+      // ANY card / any non-folder row — findVisible() picks the first one
+      // with a non-zero rect (skips collapsed sections, hidden subapps).
+      target: 'article.card, .list tbody tr:not(.folder-row)'
     },
     {
       title: 'Open in browser',
@@ -68,6 +68,12 @@
   let step = $state(0);
   let dismissed = $state(false);
   let busy = $state(false);
+
+  // Live viewport dimensions — used as the SVG viewBox so user-space coords
+  // (from getBoundingClientRect) line up 1:1 with CSS pixels. SSR uses
+  // sensible fallbacks until onMount overwrites with the real values.
+  let vw = $state(1024);
+  let vh = $state(768);
 
   // Bounding box of the current target. null when no target matched.
   let spotlight: { x: number; y: number; w: number; h: number } | null = $state(null);
@@ -156,12 +162,16 @@
   });
 
   function onResize() {
+    vw = window.innerWidth;
+    vh = window.innerHeight;
     void locate(steps[step].target);
   }
   // onMount is a no-op on the server; the returned function is the cleanup
   // and is also skipped on the server. onDestroy, by contrast, fires during
   // SSR teardown — putting `window.removeEventListener` there crashed render.
   onMount(() => {
+    vw = window.innerWidth;
+    vh = window.innerHeight;
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   });
@@ -185,8 +195,21 @@
     {@const sh = Math.max(0, spotlight.h)}
     <!-- SVG mask cuts a transparent rectangle through a dark overlay. The
          pointer-events on the overlay block clicks everywhere except the
-         spotlit area, so the user can interact with what we're highlighting. -->
-    <svg class="overlay" aria-hidden="true">
+         spotlit area, so the user can interact with what we're highlighting.
+         CRITICAL: width/height attrs MUST be present. Without them, browsers
+         default the SVG viewport to 300×150 — so `<rect width="100%">`
+         renders only a 300×150 dark box in the top-left and the cutout at
+         a card's real coords (e.g. x=400) ends up outside the SVG. A
+         viewBox over the live viewport size keeps SVG coords 1:1 with CSS
+         pixels, which is what scrollIntoView+getBoundingClientRect produces. -->
+    <svg
+      class="overlay"
+      aria-hidden="true"
+      width="100%"
+      height="100%"
+      viewBox="0 0 {vw} {vh}"
+      preserveAspectRatio="none"
+    >
       <defs>
         <mask id="tour-mask">
           <rect x="0" y="0" width="100%" height="100%" fill="white" />
