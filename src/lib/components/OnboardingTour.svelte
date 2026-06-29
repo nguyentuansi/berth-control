@@ -25,6 +25,10 @@
     target: string | null;
   };
 
+  // Selectors are tried left-to-right; first match wins. This lets one step
+  // work in BOTH grid view (cards) AND list view (table rows) without
+  // branching at runtime. We spotlight CONTAINERS, not 8-pixel dots — a
+  // tiny target reads as "broken tour" even when the highlight is correct.
   const steps: Step[] = [
     {
       title: 'Welcome to berth-control',
@@ -36,27 +40,28 @@
     {
       title: 'Status, at a glance',
       body:
-        'Each dot is the app\'s live status: green = listener up, amber = ' +
-        'managed process alive but not yet serving, red = down. The status ' +
-        'updates within 2 seconds of the OS state changing.',
-      target: '.b-dot'
+        'Each app shows a status dot: green = listener up, amber = managed ' +
+        'process alive but not yet serving, red = down. Status updates within ' +
+        '2 seconds of the OS state changing.',
+      // First card (grid) or first non-folder row (list). The whole row gets
+      // spotlit so the dot is clearly part of a row, not a floating pixel.
+      target: '.card:first-of-type, .list tbody tr:not(.folder-row):first-of-type'
     },
     {
-      title: 'Logs follow you',
+      title: 'Open in browser',
       body:
-        'Click the clock icon to see live stdout/stderr for any app. The ' +
-        'mini-log window also pops up automatically when you start an app, ' +
-        'so build errors surface immediately.',
-      target: 'a[title="Logs"], a[aria-label="Logs"]'
+        'When an app is up, click its "open" pill to launch it. Berth runs a ' +
+        'Host-rewrite proxy so the tailnet URL works on any device on your ' +
+        'tailnet — without editing vite.config or anything in your repo.',
+      target: '.open-pill'
     },
     {
-      title: 'Tailnet access',
+      title: 'More actions',
       body:
-        'Berth runs a Host-rewrite proxy in front of each app so the tailnet ' +
-        'URL works without editing your repo\'s vite.config or anything else. ' +
-        'Click the "open" pill on a running card to launch it from anywhere ' +
-        'on your tailnet.',
-      target: '.open-pill, [title*="Open"][href*="://"]'
+        'The ⋮ button on each app opens Logs, Restart, and Tailnet/local URL ' +
+        'shortcuts. The mini-log window also pops up automatically when you ' +
+        'start an app so build errors surface immediately.',
+      target: 'button[aria-label="More actions"]'
     }
   ];
 
@@ -73,21 +78,41 @@
   const tooltipH = 200; // approximate; positioning is loose
   const PAD = 12;
 
+  // Returns the first element matching `selector` that is actually
+  // rendered and has a non-zero box. Elements inside closed dropdowns,
+  // collapsed folders, or `display: none` parents are skipped — those would
+  // resolve to a 0×0 rect and produce an invisible "spotlight."
+  function findVisible(selector: string): HTMLElement | null {
+    const all = document.querySelectorAll<HTMLElement>(selector);
+    for (const el of all) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) return el;
+    }
+    return null;
+  }
+
   async function locate(selector: string | null) {
     spotlight = null;
     tooltipPos = null;
     await tick();
     if (!selector) return;
-    const el = document.querySelector(selector) as HTMLElement | null;
-    if (!el) return;
+    const el = findVisible(selector);
+    if (!el) {
+      // Selector didn't resolve to a visible element — fall back to the
+      // centered modal so the step still progresses.
+      return;
+    }
     el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-    await new Promise((r) => setTimeout(r, 320));
+    await new Promise((r) => setTimeout(r, 360));
     const r = el.getBoundingClientRect();
+    // 12px padding around the target — gives the ring breathing room and
+    // makes small targets (status dots, pills) clearly visible.
+    const PAD_SPOT = 12;
     spotlight = {
-      x: r.left - 6,
-      y: r.top - 6,
-      w: r.width + 12,
-      h: r.height + 12
+      x: r.left - PAD_SPOT,
+      y: r.top - PAD_SPOT,
+      w: r.width + PAD_SPOT * 2,
+      h: r.height + PAD_SPOT * 2
     };
     tooltipPos = placeTooltip(spotlight);
   }
@@ -168,19 +193,33 @@
           <rect x={sx} y={sy} width={sw} height={sh} rx="8" ry="8" fill="black" />
         </mask>
       </defs>
-      <rect x="0" y="0" width="100%" height="100%" fill="rgba(0,0,0,0.55)" mask="url(#tour-mask)" />
-      <!-- Glow outline around the cutout. -->
+      <rect x="0" y="0" width="100%" height="100%" fill="rgba(0,0,0,0.62)" mask="url(#tour-mask)" />
+      <!-- Outer outline (white) + inner accent stroke for a clear "this is
+           the spotlight" affordance even on tiny targets. -->
       <rect
         x={sx}
         y={sy}
         width={sw}
         height={sh}
-        rx="8"
-        ry="8"
+        rx="10"
+        ry="10"
         fill="none"
-        stroke="rgba(255,255,255,0.9)"
-        stroke-width="2"
+        stroke="rgba(255,255,255,0.95)"
+        stroke-width="3"
         class="ring"
+      />
+      <rect
+        x={sx - 4}
+        y={sy - 4}
+        width={sw + 8}
+        height={sh + 8}
+        rx="12"
+        ry="12"
+        fill="none"
+        stroke="var(--b-accent, #6aa1ff)"
+        stroke-opacity="0.65"
+        stroke-width="2"
+        class="ring-outer"
       />
     </svg>
   {:else}
@@ -248,13 +287,16 @@
   .ring {
     animation: ring-pulse 1.6s ease-in-out infinite;
   }
+  .ring-outer {
+    animation: ring-pulse 1.6s ease-in-out infinite reverse;
+  }
   @keyframes ring-pulse {
     0%,
     100% {
       stroke-opacity: 0.95;
     }
     50% {
-      stroke-opacity: 0.5;
+      stroke-opacity: 0.55;
     }
   }
   .tooltip {

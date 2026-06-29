@@ -68,55 +68,68 @@
   }
 </script>
 
-{#if !allDone}
-  <aside class="checklist" aria-label="Onboarding progress">
-    <header>
-      <strong>Getting started</strong>
-      <div class="trail">
-        <span class="count b-mono">{doneCount} / {steps.length}</span>
-        <button
-          class="skip"
-          type="button"
-          onclick={handleSkip}
-          disabled={skipping || !onSkip}
-          title="Skip onboarding for this account"
-          aria-label="Skip onboarding"
-        >
-          <X size={11} />
-        </button>
-      </div>
-    </header>
-    <ul>
-      {#each steps as s (s.key)}
-        {@const isActive = s.key === activeKey}
-        <li class:done={s.done} class:active={isActive}>
-          {#if s.done}
-            <span class="row" aria-disabled="true">
-              <span class="ico"><Check size={13} /></span>
-              <span class="lbl">{s.label}</span>
-            </span>
-          {:else if isActive && s.onClick}
-            <button
-              type="button"
-              class="row click"
-              onclick={s.onClick}
-              title={s.hint}
-            >
-              <span class="ico"><Circle size={13} /></span>
-              <span class="lbl">{s.label}</span>
-              <span class="arr"><ArrowRight size={11} /></span>
-            </button>
-          {:else}
-            <span class="row" aria-disabled="true">
-              <span class="ico"><Circle size={13} /></span>
-              <span class="lbl">{s.label}</span>
-            </span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-  </aside>
-{/if}
+<!-- Always render. When allDone, the card becomes a "victory" state with
+     an explicit "Got it" button. We deliberately do NOT auto-hide on
+     completion — silent disappearance reads as "the UI broke" to a user
+     who didn't click anything. The parent's outer gate
+     (`tourCompleted == null`) is the persistent dismissal mechanism. -->
+<aside class="checklist" class:victory={allDone} aria-label="Onboarding progress">
+  <header>
+    <strong>{allDone ? 'All done — welcome aboard' : 'Getting started'}</strong>
+    <div class="trail">
+      <span class="count b-mono">{doneCount} / {steps.length}</span>
+      <button
+        class="skip"
+        type="button"
+        onclick={handleSkip}
+        disabled={skipping || !onSkip}
+        title={allDone ? 'Close' : 'Skip onboarding for this account'}
+        aria-label={allDone ? 'Close' : 'Skip onboarding'}
+      >
+        <X size={11} />
+      </button>
+    </div>
+  </header>
+  <ul>
+    {#each steps as s (s.key)}
+      {@const isActive = s.key === activeKey}
+      <li class:done={s.done} class:active={isActive}>
+        {#if s.done}
+          <span class="row" aria-disabled="true">
+            <span class="ico"><Check size={13} /></span>
+            <span class="lbl">{s.label}</span>
+          </span>
+        {:else if isActive && s.onClick}
+          <button
+            type="button"
+            class="row click"
+            onclick={s.onClick}
+            title={s.hint}
+          >
+            <span class="ico"><Circle size={13} /></span>
+            <span class="lbl">{s.label}</span>
+            <span class="arr"><ArrowRight size={11} /></span>
+          </button>
+        {:else}
+          <span class="row" aria-disabled="true">
+            <span class="ico"><Circle size={13} /></span>
+            <span class="lbl">{s.label}</span>
+          </span>
+        {/if}
+      </li>
+    {/each}
+  </ul>
+  {#if allDone}
+    <button
+      type="button"
+      class="b-btn primary done-btn"
+      onclick={handleSkip}
+      disabled={skipping || !onSkip}
+    >
+      Got it
+    </button>
+  {/if}
+</aside>
 
 <style>
   .checklist {
@@ -222,6 +235,17 @@
     width: 16px;
     height: 16px;
     align-items: center;
+    justify-content: center;
+  }
+  .checklist.victory {
+    border-color: color-mix(in oklab, var(--b-ok) 55%, var(--b-border));
+    box-shadow:
+      0 8px 24px rgba(0, 0, 0, 0.12),
+      0 0 0 1px color-mix(in oklab, var(--b-ok) 22%, transparent);
+  }
+  .done-btn {
+    width: 100%;
+    margin-top: 8px;
     justify-content: center;
   }
 </style>
