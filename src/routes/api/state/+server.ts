@@ -127,7 +127,17 @@ export async function _snapshot(): Promise<Snapshot> {
   for (const a of apps) {
     const listener = a.port ? byPort.get(a.port) ?? null : null;
     const m = managed[a.id] ?? null;
-    const up = !!listener || !!m;
+    // `up` reflects the user-facing question "is the app actually serving
+    // right now?". Counting a managed PID-without-listener as "up" was the
+    // source of the inverse-bug: a `bun run dev` shell that's alive but
+    // whose vite child died showed as up=true with green dot + Stop button
+    // for hours, while logs clearly said the dev server exited. Listener
+    // presence is the only honest signal. The "managed but not serving"
+    // case is still reachable for the UI via `managedPid + !serving` —
+    // the dashboard uses that combo to show an amber warn dot and route
+    // the action button to Stop (so a stuck managed process can be torn
+    // down without needing a new Start that the supervisor would refuse).
+    const up = !!listener;
     const tsMap = a.port ? tsByLocal.get(a.port) : undefined;
     const st: LiveStatus = {
       up,

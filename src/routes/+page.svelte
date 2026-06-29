@@ -1428,7 +1428,7 @@
                   </a>
                 {/if}
               {/if}
-              {#if !s?.up}
+              {#if !s?.up && s?.managedPid == null}
                 {#if a.start_cmd}
                   <button
                     class="b-btn icon primary"
@@ -1448,11 +1448,13 @@
                   class="b-btn icon danger"
                   disabled={busy[a.id] != null}
                   onclick={() => act(a.id, 'stop')}
-                  title={s.managedPid ? 'Stop managed process' : `Stop external listener (pid ${s.listenerPid ?? '?'})`}
+                  title={!s?.up && s?.managedPid
+                    ? `Process pid ${s.managedPid} is alive but not serving — stop it to recover`
+                    : s?.managedPid ? 'Stop managed process' : `Stop external listener (pid ${s?.listenerPid ?? '?'})`}
                 >
                   <Square size={13} />
                 </button>
-                {#if s.managedPid}
+                {#if s?.managedPid}
                   <button class="b-btn icon" disabled={busy[a.id] != null} onclick={() => act(a.id, 'restart')} title="Restart">
                     <RotateCw size={13} />
                   </button>
