@@ -4,18 +4,17 @@ import type { RequestHandler } from './$types.js';
 import { requireUser } from '$lib/server/auth.js';
 import { db, schema } from '$lib/server/db/index.js';
 
-// POST /api/onboarding/dismiss
+// POST /api/onboarding/dismiss-checklist
 //
-// Marks the SPOTLIGHT TOUR as completed for the current user by stamping
-// `users.tour_completed_at`. Does NOT dismiss the checklist — that has
-// its own endpoint at `/api/onboarding/dismiss-checklist` so users can
-// keep one and close the other. The dashboard's load() reads both
-// columns and gates each component independently.
+// Stamps `users.checklist_dismissed_at` so the "Getting started" checklist
+// stops rendering for this user. Independent from the spotlight tour —
+// closing one does not close the other. The tour has its own endpoint
+// (`/api/onboarding/dismiss`) which stamps `tour_completed_at`.
 
 export const POST: RequestHandler = async ({ locals }) => {
   const user = requireUser(locals);
   db.update(schema.users)
-    .set({ tour_completed_at: new Date() })
+    .set({ checklist_dismissed_at: new Date() })
     .where(eq(schema.users.login, user.login))
     .run();
   return json({ ok: true });

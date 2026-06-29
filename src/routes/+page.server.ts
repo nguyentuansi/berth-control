@@ -57,15 +57,20 @@ export const load: PageServerLoad = async ({ locals }) => {
   } catch (e) {
     console.warn('[dashboard] initial livestate snapshot failed:', e instanceof Error ? e.message : String(e));
   }
-  // tour_completed_at gates the onboarding checklist + tour. If it's null,
-  // the user hasn't dismissed onboarding yet → show both. The dismiss
-  // endpoint stamps this column and the page invalidates.
+  // Each onboarding affordance has its own dismiss state — the user can
+  // finish the tour while still using the checklist as a milestones
+  // tracker, or dismiss the checklist while keeping the tour for later.
+  // Either column being null = that component still renders.
   const me = db
-    .select({ tour_completed_at: schema.users.tour_completed_at })
+    .select({
+      tour_completed_at: schema.users.tour_completed_at,
+      checklist_dismissed_at: schema.users.checklist_dismissed_at
+    })
     .from(schema.users)
     .where(eq(schema.users.login, user.login))
     .get();
   const tourCompleted = me?.tour_completed_at ?? null;
+  const checklistDismissed = me?.checklist_dismissed_at ?? null;
 
   return {
     apps: list,
@@ -75,6 +80,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     grants,
     initialLive,
     tourCompleted,
+    checklistDismissed,
     user
   };
 };

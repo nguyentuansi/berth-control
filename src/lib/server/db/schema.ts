@@ -230,6 +230,11 @@ export const users = sqliteTable('users', {
   password_hash: text('password_hash'),               // null = Tailscale/OS-only
   created_at: integer('created_at', { mode: 'timestamp_ms' }),
   tour_completed_at: integer('tour_completed_at', { mode: 'timestamp_ms' }),
+  // Independent from `tour_completed_at`: the checklist and the spotlight
+  // tour are two distinct onboarding affordances and the user can dismiss
+  // them separately. "Got it" on the tour stamps tour_completed_at only;
+  // closing the checklist's X button stamps this one only.
+  checklist_dismissed_at: integer('checklist_dismissed_at', { mode: 'timestamp_ms' }),
   last_seen: integer('last_seen', { mode: 'timestamp_ms' })
 });
 

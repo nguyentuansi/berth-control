@@ -200,7 +200,8 @@ export function ensureSchema() {
     ['display_name', 'TEXT'],
     ['password_hash', 'TEXT'],
     ['created_at', 'INTEGER'],
-    ['tour_completed_at', 'INTEGER']
+    ['tour_completed_at', 'INTEGER'],
+    ['checklist_dismissed_at', 'INTEGER']
   ];
   for (const [col, type] of userCols) {
     try {

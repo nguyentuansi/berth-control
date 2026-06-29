@@ -122,14 +122,23 @@
 
   let addOpen = $state(false);
 
-  // Onboarding dismiss: POST stamps users.tour_completed_at, then invalidateAll
-  // re-runs the page load, which now returns tourCompleted != null and both
-  // <OnboardingChecklist> and <OnboardingTour> stop rendering.
-  async function dismissOnboarding() {
+  // Tour and checklist are dismissed INDEPENDENTLY — finishing the tour
+  // shouldn't close the checklist, and vice versa. Each POSTs its own
+  // endpoint that stamps its own column, then invalidateAll() re-runs
+  // page.server.ts and the corresponding gate flips false.
+  async function dismissTour() {
     try {
       await fetch('/api/onboarding/dismiss', { method: 'POST' });
     } catch (e) {
-      console.warn('[onboarding] dismiss failed:', e);
+      console.warn('[onboarding] dismiss tour failed:', e);
+    }
+    await invalidateAll();
+  }
+  async function dismissChecklist() {
+    try {
+      await fetch('/api/onboarding/dismiss-checklist', { method: 'POST' });
+    } catch (e) {
+      console.warn('[onboarding] dismiss checklist failed:', e);
     }
     await invalidateAll();
   }
@@ -1787,7 +1796,7 @@
 </div>
 {/if}
 
-{#if data.user && data.apps.length > 0 && data.tourCompleted == null}
+{#if data.user && data.apps.length > 0 && data.checklistDismissed == null}
   {@const startedAnApp = Object.values(livestate).some((s) => s?.managedPid)}
   {@const sawGreen = Object.values(livestate).some((s) => s?.up)}
   <OnboardingChecklist
@@ -1803,12 +1812,12 @@
         btn.focus();
       }
     }}
-    onSkip={dismissOnboarding}
+    onSkip={dismissChecklist}
   />
 {/if}
 
 {#if data.user && data.tourCompleted == null && data.apps.length > 0}
-  <OnboardingTour onComplete={dismissOnboarding} />
+  <OnboardingTour onComplete={dismissTour} />
 {/if}
 
 <!-- Floating dropdown. One element shared by both menu kinds — rendered at
