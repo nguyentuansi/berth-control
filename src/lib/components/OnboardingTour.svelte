@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { X, ArrowRight, ArrowLeft } from 'lucide-svelte';
 
   // 4-step welcome tour. Each step targets a CSS selector — when the
@@ -133,8 +133,13 @@
   function onResize() {
     void locate(steps[step].target);
   }
-  onMount(() => window.addEventListener('resize', onResize));
-  onDestroy(() => window.removeEventListener('resize', onResize));
+  // onMount is a no-op on the server; the returned function is the cleanup
+  // and is also skipped on the server. onDestroy, by contrast, fires during
+  // SSR teardown — putting `window.removeEventListener` there crashed render.
+  onMount(() => {
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  });
 
   async function finish() {
     busy = true;
