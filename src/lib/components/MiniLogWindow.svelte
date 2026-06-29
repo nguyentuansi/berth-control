@@ -79,11 +79,8 @@
       </button>
     </span>
   </header>
-  <pre bind:this={pre} class="body b-mono">
-{#each lines as l (l.id)}
-<span class={l.stream}>{l.line}
-</span>{/each}{#if lines.length === 0}<span class="empty">waiting for output…</span>{/if}
-  </pre>
+  <pre bind:this={pre} class="body b-mono">{#each lines as l (l.id)}<span class={l.stream}><span class="ts">{new Date(l.ts).toLocaleTimeString()}</span> {l.line}
+</span>{/each}{#if lines.length === 0}<span class="empty">waiting for output…</span>{/if}</pre>
 </aside>
 
 <style>
@@ -154,5 +151,12 @@
   }
   .body .empty {
     color: var(--b-text-3);
+  }
+  /* Same timestamp styling as the full /apps/[id]/logs page so the two
+     views render identically (user request: mini and full must match). */
+  .body .ts {
+    color: var(--b-text-3);
+    margin-right: 6px;
+    user-select: none;
   }
 </style>

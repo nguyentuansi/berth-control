@@ -1,6 +1,7 @@
 import type { Handle } from '@sveltejs/kit';
 import { ensureSchema } from '$lib/server/db/migrate.js';
 import { reattachOnBoot } from '$lib/server/supervisor.js';
+import { reattachProxiesOnBoot } from '$lib/server/tailscale-serve.js';
 import { importPortsMd } from '$lib/server/ports-md.js';
 import { identify } from '$lib/server/tailscale.js';
 import { isDemoMode } from '$lib/server/demo.js';
@@ -111,6 +112,15 @@ function bootOnce() {
     return;
   }
   reattachOnBoot();
+  // Repair Host-rewrite proxies for any tailscale serve mapping that's
+  // pointing at a dead 127.0.0.1:<proxyPort>. Mappings survive berth
+  // restarts in tailscaled's config but the in-memory proxy registry
+  // doesn't, so without this step every tailnet URL is broken until the
+  // user manually republishes. Fire-and-forget — boot continues even if
+  // tailscale CLI isn't available (linux non-operator, tailscaled down).
+  void reattachProxiesOnBoot().catch((e) => {
+    console.warn('[tailscale] reattachProxiesOnBoot crashed:', e);
+  });
   try {
     const r = importPortsMd();
     console.log(`[berth] PORTS.md import: +${r.inserted} new, ~${r.updated} updated, ${r.total} rows`);

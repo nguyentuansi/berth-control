@@ -291,3 +291,68 @@ export function mappingsByLocalPort(mappings: TailscaleMapping[]): Map<number, T
   }
   return m;
 }
+
+/** On berth-control boot, repair tailscale serve mappings whose Host-rewrite
+ *  proxy was lost when the previous berth process died.
+ *
+ *  Problem this fixes: proxiesByLocalPort is an in-memory Map that doesn't
+ *  survive a restart. But `tailscale serve` mappings DO survive — they
+ *  live in tailscaled's persistent config. So after every berth restart,
+ *  every tailnet URL berth had published was pointing at a 127.0.0.1:<port>
+ *  that has no listener anymore, and the user got "connection refused" on
+ *  every tailnet URL until they manually re-published each app.
+ *
+ *  Fix: walk the current mappings. For each one, the parsed `localPort`
+ *  is the OLD proxy port. If nothing is listening there, the proxy is
+ *  gone — call addServeMapping(tsPort) which spins up a fresh proxy and
+ *  rewrites the tailscale serve mapping to point at it. Idempotent: if
+ *  the proxy already exists (e.g. ensureHostRewriteProxy returns the
+ *  cached one), addServeMapping still removes+republishes the tailscale
+ *  side, which heals stale mappings from any cause. */
+export async function reattachProxiesOnBoot(): Promise<void> {
+  const { default: net } = await import('node:net');
+  const probe = (port: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      const s = net.createConnection({ host: '127.0.0.1', port, timeout: 400 });
+      const done = (alive: boolean) => {
+        try {
+          s.destroy();
+        } catch {
+          /* */
+        }
+        resolve(alive);
+      };
+      s.on('connect', () => done(true));
+      s.on('error', () => done(false));
+      s.on('timeout', () => done(false));
+    });
+
+  let status: ServeStatus;
+  try {
+    status = await getServeStatus(0);
+  } catch {
+    return;
+  }
+  if (!status.available || status.mappings.length === 0) return;
+
+  let repaired = 0;
+  for (const m of status.mappings) {
+    const proxyAlive = await probe(m.localPort);
+    if (proxyAlive) continue;
+    try {
+      // addServeMapping uses m.tailscalePort as BOTH the app's listen
+      // port AND the key into ensureHostRewriteProxy — that matches the
+      // invariant the original addServeMapping established (see line ~88).
+      await addServeMapping(m.tailscalePort);
+      repaired++;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[tailscale] reattachProxiesOnBoot: failed to repair :${m.tailscalePort} → ${msg.slice(0, 200)}`
+      );
+    }
+  }
+  if (repaired > 0) {
+    console.log(`[tailscale] reattachProxiesOnBoot: repaired ${repaired} mapping(s)`);
+  }
+}
