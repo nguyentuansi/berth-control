@@ -135,6 +135,21 @@ export async function startApp(
     }
   }
 
+  // Claim the TCP port BEFORE spawn. If a stale process is still bound to
+  // this app's port — usually a `bun run dev` whose parent berth thought
+  // was dead and which got reparented to launchd/init — vite/wrangler will
+  // fail with EADDRINUSE the moment we spawn, and the user sees "Start
+  // does nothing." We've seen runs survive berth restarts as orphans
+  // (especially on macOS, where the old pidAlive read /proc and always
+  // returned false, so reattach decided everything was already exited).
+  // Resolution: if the squatter's cmdline references THIS app's project
+  // path, it's our own orphan — kill its tree. If it's foreign (an
+  // unrelated app the user is running), surface a clear error rather than
+  // silently murdering their other work.
+  if (app.port) {
+    await claimPort(appId, app, userLogin ?? null);
+  }
+
   // Tailnet Host-header handling is fully out-of-process now: when a user
   // adds a `tailscale serve` mapping, tailscale-serve.ts stands up a
   // Host-rewrite proxy (src/lib/server/host-rewrite-proxy.ts) so the dev
@@ -417,6 +432,107 @@ function collectDescendants(rootPid: number): number[] {
   return out;
 }
 
+/** Evict any orphan from `app.port` BEFORE we attempt to spawn. Returns
+ *  silently if the port is free or if the squatter dies cleanly. Throws
+ *  if a foreign (non-berth-spawned) process is holding the port — we don't
+ *  want a Start to murder the user's unrelated work, so we surface that
+ *  case instead of acting on it.
+ *
+ *  "Is this our orphan?" heuristic: lsof's cmdline for the squatter root
+ *  must mention `app.project_path` or one of its parent segments — a
+ *  `bun run dev` we spawned will always have that cwd (or its vite child
+ *  will reference `node_modules/.bin/vite` under it). Anything else is
+ *  treated as foreign. The heuristic is intentionally narrow; we'd rather
+ *  fail the Start with a useful message than wrongly kill. */
+async function claimPort(
+  appId: string,
+  app: App,
+  userLogin: string | null
+): Promise<void> {
+  if (!app.port) return;
+  const listeners = await listListeners();
+  const ours = listeners.filter((l) => l.port === app.port && l.isLocal && l.pid);
+  if (ours.length === 0) return;
+
+  // Build the "is this our orphan?" set: walk each squatter's descendant
+  // tree, look for any PID whose `ps -o command=` output references the
+  // app's project_path. If found, the whole root tree is ours.
+  const projectMarker = app.project_path.replace(/\/+$/, '');
+  const orphanRoots: number[] = [];
+  const foreign: Array<{ pid: number; cmd: string | null }> = [];
+  for (const l of ours) {
+    const rootPid = l.pid!;
+    let claimed = false;
+    try {
+      const cmdlines = execSync(
+        `ps -o pid=,command= -p $(pgrep -P ${rootPid} 2>/dev/null; echo ${rootPid})`,
+        { encoding: 'utf8', timeout: 2000 }
+      );
+      claimed = cmdlines.includes(projectMarker);
+    } catch {
+      /* fall through: treat as foreign */
+    }
+    if (claimed) orphanRoots.push(rootPid);
+    else foreign.push({ pid: rootPid, cmd: l.cmd });
+  }
+
+  if (foreign.length > 0 && orphanRoots.length === 0) {
+    const f = foreign[0];
+    const msg = `port ${app.port} held by foreign pid ${f.pid} (${f.cmd ?? '?'}) — not killing; resolve manually`;
+    db.insert(events).values({ app_id: appId, user_login: userLogin, level: 'warn', msg }).run();
+    throw new Error(msg);
+  }
+
+  // Kill each claimed orphan root with the same tree-walk + SIGKILL escalation
+  // we use for normal stops. Don't await sequentially — they're independent.
+  for (const root of orphanRoots) {
+    const tree = collectDescendants(root);
+    db.insert(events)
+      .values({
+        app_id: appId,
+        user_login: userLogin,
+        level: 'info',
+        msg: `claimPort: evicting orphan root ${root} (tree size ${tree.length})`
+      })
+      .run();
+    for (const p of tree) {
+      try {
+        process.kill(p, 'SIGTERM');
+      } catch {
+        /* */
+      }
+    }
+  }
+
+  // Wait up to 4s for the port to free. Re-poll every 200ms.
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    const still = (await listListeners()).filter((l) => l.port === app.port && l.isLocal);
+    if (still.length === 0) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  // Still bound → SIGKILL anything we recognize as ours and any descendants
+  // that may have spawned mid-wait.
+  for (const root of orphanRoots) {
+    const tree = collectDescendants(root);
+    for (const p of tree) {
+      try {
+        process.kill(p, 'SIGKILL');
+      } catch {
+        /* */
+      }
+    }
+  }
+  await new Promise((r) => setTimeout(r, 300));
+
+  const final = (await listListeners()).filter((l) => l.port === app.port && l.isLocal);
+  if (final.length > 0) {
+    const msg = `port ${app.port} still bound after SIGKILL (pid ${final[0].pid}); start will likely fail`;
+    db.insert(events).values({ app_id: appId, user_login: userLogin, level: 'warn', msg }).run();
+  }
+}
+
 async function killByPid(
   appId: string,
   pid: number,
@@ -459,14 +575,29 @@ async function killByPid(
 
   // Wait up to 5s for the whole tree to die — not just the root. A web server
   // that handles SIGTERM gracefully takes a beat; turbo workers usually go
-  // immediately.
+  // immediately. RE-COLLECT the tree on every poll: a child spawned between
+  // our initial snapshot and the SIGTERM landing (vite reload watcher, bun
+  // worker fork) wouldn't be in `tree` and would survive the kill. Signal
+  // any newly-discovered PIDs as we find them.
   const start = Date.now();
+  const allSeen = new Set(tree);
   while (Date.now() - start < 5000) {
-    if (!tree.some((p) => pidAlive(p))) break;
+    const fresh = collectDescendants(pid).filter((p) => !allSeen.has(p));
+    if (fresh.length > 0) {
+      for (const p of fresh) {
+        allSeen.add(p);
+        try {
+          process.kill(p, 'SIGTERM');
+        } catch {
+          /* */
+        }
+      }
+    }
+    if (![...allSeen].some((p) => pidAlive(p))) break;
     await new Promise((r) => setTimeout(r, 150));
   }
 
-  const survivors = tree.filter((p) => pidAlive(p));
+  const survivors = [...allSeen].filter((p) => pidAlive(p));
   if (survivors.length > 0) {
     for (const p of survivors) {
       try {
