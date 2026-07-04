@@ -268,12 +268,25 @@
     try {
       const r = await fetch(`/api/apps/${id}/repo/pull`, { method: 'POST' });
       if (!r.ok) {
-        toast.update(tid, {
-          kind: 'error',
-          title: 'Pull failed',
-          description: summarizeError(await r.text(), r.status),
-          durationMs: 10_000
-        });
+        // Server returns a structured body { error, kind, hint } wrapped by
+        // SvelteKit as { error: { message: "<stringified inner JSON>" } }.
+        // Try to unwrap the inner shape for an actionable toast; fall back
+        // to generic summarizeError for any legacy 4xx that doesn't carry
+        // our shape.
+        const raw = await r.text();
+        let title = 'Pull failed';
+        let description = summarizeError(raw, r.status);
+        try {
+          const outer = JSON.parse(raw);
+          const inner = JSON.parse(outer?.error?.message ?? outer?.message ?? '');
+          if (inner?.kind && inner?.hint) {
+            title = `Pull failed: ${appName(id)}`;
+            description = `${inner.hint}\n\ngit: ${inner.error ?? ''}`.trim();
+          }
+        } catch {
+          /* not our structured shape — keep summarizeError fallback */
+        }
+        toast.update(tid, { kind: 'error', title, description, durationMs: 12_000 });
         return;
       }
       const j = (await r.json()) as { ok: true; new_sha: string };
