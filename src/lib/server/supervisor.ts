@@ -26,12 +26,26 @@ const LOG_ROOT = resolve(homedir(), '.berth-control/logs');
  *  PATH so children resolve `node` via their normal precedence (system
  *  default, asdf/nvm shim, etc.) — matching whatever the user used at install
  *  time. We only filter version-pinned paths; generic `/opt/homebrew/bin`
- *  with the default `node` symlink stays. */
+ *  with the default `node` symlink stays.
+ *
+ *  ALSO: append the user's personal bin dirs (`~/.local/bin`, `~/.bun/bin`)
+ *  when absent. berth-control itself is launched by launchd with a minimal
+ *  system PATH that lacks them, and child apps need user-installed CLIs —
+ *  the berth chat API spawns `claude` (lives in ~/.local/bin) for its PTY
+ *  sessions; without this, the spawn fails ENOENT and chat replies come
+ *  back empty. Appending (not prepending) keeps system/homebrew precedence. */
 function childPathWithoutPinnedNode(): string {
   const sep = process.platform === 'win32' ? ';' : ':';
   const entries = (process.env.PATH ?? '').split(sep);
   const pinned = /\/node@?\d+(\.\d+)*\/bin\/?$/;
-  return entries.filter((e) => !pinned.test(e)).join(sep);
+  const kept = entries.filter((e) => !pinned.test(e));
+  if (process.platform !== 'win32') {
+    const home = process.env.HOME ?? '';
+    for (const userBin of [`${home}/.local/bin`, `${home}/.bun/bin`]) {
+      if (home && !kept.includes(userBin)) kept.push(userBin);
+    }
+  }
+  return kept.join(sep);
 }
 
 interface LiveProc {
