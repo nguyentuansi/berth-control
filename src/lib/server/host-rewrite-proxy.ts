@@ -1,4 +1,4 @@
-import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import { Socket } from 'node:net';
 
 // Tiny HTTP + WebSocket reverse proxy that rewrites the inbound `Host`
@@ -114,9 +114,29 @@ export class HostRewriteProxy {
   // hostname `'localhost'` resolves to both v4 and v6 and node picks the
   // one that actually answers. Without this, a IPv6-only-bound dev server
   // gets a 502 from the proxy.
-  private handleHttp(req: IncomingMessage, res: ServerResponse): void {
+  // The headers the dev server sees: Host rewritten, and an Origin that names
+  // the address the browser asked for (a same-origin request, such as a form
+  // posted from the page) rewritten with it. Without that the dev server sees
+  // `Origin: https://<tailnet name>` on a request to `http://<rewriteHost>`,
+  // and a framework's same-origin check refuses it (SvelteKit answers a form
+  // post 403 "Cross-site POST form submissions are forbidden"). An Origin
+  // naming any other site passes as it came.
+  private downstreamHeaders(req: IncomingMessage): IncomingHttpHeaders {
     const headers = { ...req.headers };
     headers.host = this.rewriteHost;
+    const asked = [req.headers.host, req.headers['x-forwarded-host']].filter((h): h is string => typeof h === 'string');
+    if (typeof req.headers.origin === 'string') {
+      try {
+        if (asked.includes(new URL(req.headers.origin).host)) headers.origin = `http://${this.rewriteHost}`;
+      } catch {
+        /* not a URL ("null"): passed as it came */
+      }
+    }
+    return headers;
+  }
+
+  private handleHttp(req: IncomingMessage, res: ServerResponse): void {
+    const headers = this.downstreamHeaders(req);
 
     const proxyReq = httpRequest(
       {
@@ -180,9 +200,8 @@ export class HostRewriteProxy {
       family: 0,
       autoSelectFamily: true
     }, () => {
-      // Rebuild the request line + headers with Host rewritten.
-      const headers = { ...req.headers };
-      headers.host = this.rewriteHost;
+      // Rebuild the request line + headers with Host (and a same-origin Origin) rewritten.
+      const headers = this.downstreamHeaders(req);
       const httpVer = req.httpVersion || '1.1';
       const lines: string[] = [`${req.method} ${req.url} HTTP/${httpVer}`];
       for (const [k, v] of Object.entries(headers)) {
