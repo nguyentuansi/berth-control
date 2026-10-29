@@ -95,6 +95,11 @@ export class HostRewriteProxy {
   }
 
   /** The port the proxy is currently listening on. 0 before `start()`. */
+  /** The `Host:` header this proxy sends downstream. */
+  get host(): string {
+    return this.rewriteHost;
+  }
+
   get port(): number {
     return this.listenPort;
   }
@@ -207,15 +212,18 @@ const proxiesByLocalPort = new Map<number, HostRewriteProxy>();
 /** Get or create a proxy that rewrites Host → loopback for `devPort`.
  *  Returns the proxy's listen port. Subsequent calls for the same devPort
  *  return the existing proxy (idempotent). */
-export async function ensureHostRewriteProxy(devPort: number): Promise<number> {
+export async function ensureHostRewriteProxy(devPort: number, rewriteHost?: string | null): Promise<number> {
+  const wanted = rewriteHost || `localhost:${devPort}`;
   const existing = proxiesByLocalPort.get(devPort);
-  if (existing) return existing.port;
+  if (existing && existing.host === wanted) return existing.port;
+  // A proxy sending another Host is replaced: the app's rewrite_host changed since it was started.
+  if (existing) await stopHostRewriteProxy(devPort);
   // `localhost` (not `127.0.0.1`) so DNS returns both 127.0.0.1 and ::1;
   // combined with the http.request `family: 0` + autoSelectFamily inside
   // the proxy, node picks whichever the dev server actually bound. Vite
   // and several other runners bind ONLY [::1] when their config says
   // `host: '127.0.0.1'` — without this we'd 502.
-  const proxy = new HostRewriteProxy({ targetHost: 'localhost', targetPort: devPort });
+  const proxy = new HostRewriteProxy({ targetHost: 'localhost', targetPort: devPort, rewriteHost: wanted });
   const port = await proxy.start();
   proxiesByLocalPort.set(devPort, proxy);
   return port;

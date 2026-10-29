@@ -39,6 +39,7 @@ export const actions: Actions = {
       start_cmd: (form.get('start_cmd') ?? null) as string | null,
       stop_cmd: (form.get('stop_cmd') ?? null) as string | null,
       healthcheck_url: (form.get('healthcheck_url') ?? null) as string | null,
+      rewrite_host: String(form.get('rewrite_host') ?? '').trim() || null,
       group_tag: (form.get('group_tag') ?? null) as string | null,
       env_file: (form.get('env_file') ?? null) as string | null,
       notes: (form.get('notes') ?? null) as string | null,

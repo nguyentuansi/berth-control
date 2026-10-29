@@ -98,6 +98,15 @@
     </label>
   </div>
   <label class="full">
+    <span>Tailnet Host header</span>
+    <input
+      class="b-input"
+      name="rewrite_host"
+      value={data.app.rewrite_host ?? ''}
+      placeholder={`localhost:${data.app.port ?? '<port>'}`}
+    />
+  </label>
+  <label class="full">
     <span>Env file</span>
     <input class="b-input b-mono" name="env_file" value={data.app.env_file ?? ''} />
   </label>

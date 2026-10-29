@@ -17,6 +17,7 @@ export function ensureSchema() {
       stop_cmd TEXT,
       env_file TEXT,
       healthcheck_url TEXT,
+      rewrite_host TEXT,
       group_tag TEXT,
       hidden INTEGER NOT NULL DEFAULT 0,
       notes TEXT,
@@ -217,7 +218,8 @@ export function ensureSchema() {
     ['visibility', "TEXT NOT NULL DEFAULT 'private'"],
     ['parent_id', 'TEXT'],
     ['is_monorepo', 'INTEGER NOT NULL DEFAULT 0'],
-    ['prebuild_cmd', 'TEXT']
+    ['prebuild_cmd', 'TEXT'],
+    ['rewrite_host', 'TEXT']
   ];
   const repoCols: Array<[string, string]> = [['new_subapp_paths', 'TEXT']];
   for (const [col, type] of repoCols) {

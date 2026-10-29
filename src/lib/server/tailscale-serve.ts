@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { eq } from 'drizzle-orm';
 import { ensureHostRewriteProxy, stopHostRewriteProxy } from './host-rewrite-proxy.js';
+import { db, schema } from './db/index.js';
 
 const exec = promisify(execFile);
 
@@ -85,7 +87,7 @@ export function parseServeStatus(stdout: string): {
  * hits sudo, and Linux users without NOPASSWD get a clear error instead
  * of a silent prompt-block.
  */
-export async function addServeMapping(localPort: number): Promise<void> {
+export async function addServeMapping(localPort: number, rewriteHost?: string | null): Promise<void> {
   // Self-clean first. A previously-set mapping survives berth-control restarts
   // and survives stopApp() — and while it lives, tailscaled is bound to the
   // tailnet IPv4 + IPv6 on this port. The next vite that tries to listen
@@ -103,7 +105,7 @@ export async function addServeMapping(localPort: number): Promise<void> {
   // `localhost:<localPort>` so the dev server's allowedHosts check
   // never sees a tailnet hostname. This replaces the legacy
   // vite-config-patcher path — no user-repo modification needed.
-  const proxyPort = await ensureHostRewriteProxy(localPort);
+  const proxyPort = await ensureHostRewriteProxy(localPort, rewriteHost);
 
   // Use `localhost` (not `127.0.0.1`) so tailscaled's dialer can reach
   // either IPv4 (127.0.0.1) or IPv6 (::1). Vite, wrangler, and several
@@ -343,7 +345,9 @@ export async function reattachProxiesOnBoot(): Promise<void> {
       // addServeMapping uses m.tailscalePort as BOTH the app's listen
       // port AND the key into ensureHostRewriteProxy — that matches the
       // invariant the original addServeMapping established (see line ~88).
-      await addServeMapping(m.tailscalePort);
+      // The Host the app on that port asked for (apps.rewrite_host), or the default.
+      const app = db.select({ rewrite_host: schema.apps.rewrite_host }).from(schema.apps).where(eq(schema.apps.port, m.tailscalePort)).get();
+      await addServeMapping(m.tailscalePort, app?.rewrite_host);
       repaired++;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -106,7 +106,7 @@ export const POST: RequestHandler = async ({ params }) => {
   }
 
   try {
-    await addServeMapping(port);
+    await addServeMapping(port, app.rewrite_host);
     return json({ ok: true, port, autoDetected: app.port == null });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

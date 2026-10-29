@@ -16,6 +16,9 @@ export const apps = sqliteTable('apps', {
   prebuild_cmd: text('prebuild_cmd'),
   env_file: text('env_file'),
   healthcheck_url: text('healthcheck_url'),
+  /** The `Host:` header the tailnet proxy sends to the dev server. Null = `localhost:<port>`. Set it for a dev
+   *  server that routes by host name, e.g. `acme.localhost:5357` for an app that picks a tenant from its subdomain. */
+  rewrite_host: text('rewrite_host'),
   group_tag: text('group_tag'),
   hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
   notes: text('notes'),
